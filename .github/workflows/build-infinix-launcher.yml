@@ -2,6 +2,10 @@ name: Build Infinix X6891 Launcher
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "infinix-x6891-launcher/**"
+      - ".github/workflows/build-infinix-launcher.yml"
   push:
     branches: [ "main" ]
     paths:
