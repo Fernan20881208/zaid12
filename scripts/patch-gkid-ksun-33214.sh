@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="${1:-gkid}"
 BUILD_SH="$ROOT/build.sh"
 KSUN_COMMIT="e7536f02c4e5bb247239264b99c00d21d6923b2f"
+KSUN_SUSFS_REF="dev-susfs"
 SPOOF_VERSION="33214"
 
 if [[ ! -f "$BUILD_SH" ]]; then
@@ -11,44 +12,68 @@ if [[ ! -f "$BUILD_SH" ]]; then
   exit 1
 fi
 
-python3 - "$BUILD_SH" "$KSUN_COMMIT" "$SPOOF_VERSION" <<'PY'
+python3 - "$BUILD_SH" "$KSUN_COMMIT" "$KSUN_SUSFS_REF" "$SPOOF_VERSION" <<'PY'
 from pathlib import Path
 import sys
 
 build_path = Path(sys.argv[1])
 ksun_commit = sys.argv[2]
-spoof_version = sys.argv[3]
+ksun_susfs_ref = sys.argv[3]
+spoof_version = sys.argv[4]
 text = build_path.read_text(encoding="utf-8")
 
-old_install = 'install_ksu "KernelSU-Next/KernelSU-Next" "dev"'
-new_install = f'install_ksu "KernelSU-Next/KernelSU-Next" "{ksun_commit}"'
-if old_install not in text:
-    raise SystemExit("No se encontró la llamada KSUN esperada en build.sh; upstream cambió")
-text = text.replace(old_install, new_install, 1)
+old_normal = 'install_ksu "KernelSU-Next/KernelSU-Next" "dev"'
+new_normal = f'install_ksu "KernelSU-Next/KernelSU-Next" "{ksun_commit}"'
+old_susfs = 'install_ksu "pershoot/KernelSU-Next" "dev-susfs"'
+new_susfs = f'install_ksu "pershoot/KernelSU-Next" "{ksun_susfs_ref}"'
 
-anchor = f'''    {new_install}
+if old_normal not in text:
+    raise SystemExit("No se encontró la llamada normal de KernelSU Next esperada")
+if old_susfs not in text:
+    raise SystemExit("No se encontró la llamada KernelSU Next + SUSFS esperada")
+
+text = text.replace(old_normal, new_normal, 1)
+text = text.replace(old_susfs, new_susfs, 1)
+
+anchor = f'''    {new_normal}
   fi
 
   if susfs_included; then
 '''
-insert = f'''    {new_install}
+insert = f'''    {new_normal}
   fi
 
   log "Forcing KernelSU-Next reported version to {spoof_version}"
   KSU_KBUILD="$KSRC/KernelSU-Next/kernel/Kbuild"
   test -f "$KSU_KBUILD" || error "KernelSU-Next Kbuild not found: $KSU_KBUILD"
-  sed -i 's|$(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION)))|KSU_VERSION := {spoof_version}|' "$KSU_KBUILD"
-  sed -i 's|KSU_VERSION_FALLBACK := 1|KSU_VERSION_FALLBACK := {spoof_version}|' "$KSU_KBUILD"
+  python3 - "$KSU_KBUILD" <<'PYKSUN'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+normal = '$(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION)))'
+fallback = 'KSU_VERSION_FALLBACK := 1'
+if normal not in text:
+    raise SystemExit('No se encontró el cálculo normal de KSU_VERSION')
+if fallback not in text:
+    raise SystemExit('No se encontró KSU_VERSION_FALLBACK')
+text = text.replace(normal, 'KSU_VERSION := {spoof_version}', 1)
+text = text.replace(fallback, 'KSU_VERSION_FALLBACK := {spoof_version}', 1)
+path.write_text(text, encoding='utf-8')
+PYKSUN
   grep -Fq 'KSU_VERSION := {spoof_version}' "$KSU_KBUILD" || error "Failed to spoof normal KSUN version"
   grep -Fq 'KSU_VERSION_FALLBACK := {spoof_version}' "$KSU_KBUILD" || error "Failed to spoof fallback KSUN version"
+  git -C "$KSRC/KernelSU-Next" rev-parse HEAD | sed 's/^/KernelSU-Next source commit: /'
 
   if susfs_included; then
 '''
+
 if anchor not in text:
     raise SystemExit("No se encontró el punto de inserción KSUN esperado en build.sh")
 text = text.replace(anchor, insert, 1)
 build_path.write_text(text, encoding="utf-8")
 PY
 
-echo "GKID patched: KernelSU-Next commit=$KSUN_COMMIT, reported version=$SPOOF_VERSION"
-grep -nE 'KernelSU-Next/KernelSU-Next|KSU_VERSION := 33214|KSU_VERSION_FALLBACK := 33214' "$BUILD_SH"
+echo "GKID patched: KSUN normal commit=$KSUN_COMMIT, SUSFS ref=$KSUN_SUSFS_REF, reported version=$SPOOF_VERSION"
+grep -nE 'KernelSU-Next/KernelSU-Next|pershoot/KernelSU-Next|Forcing KernelSU-Next' "$BUILD_SH"
