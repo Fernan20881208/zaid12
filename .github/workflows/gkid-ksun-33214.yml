@@ -1,0 +1,98 @@
+name: Build GKID KSUN 33214
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - gkid-ksun-33214
+    paths:
+      - .github/workflows/gkid-ksun-33214.yml
+      - scripts/patch-gkid-ksun-33214.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gkid-ksun-33214-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: GKID KernelSU Next spoof 33214
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout build wrapper
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison ccache cpio curl dwarves flex gh git libelf-dev \
+            libssl-dev lz4 python3 python3-lxml unzip wget zip zstd
+
+      - name: Fetch pinned GKID source
+        run: |
+          git init gkid
+          git -C gkid remote add origin https://github.com/ahmed-alnassif/GKI-Duchamp.git
+          git -C gkid fetch --depth=1 origin 3711b114ab339092ad5c5ba6afd53aa769234ba1
+          git -C gkid checkout --detach FETCH_HEAD
+          echo "GKID wrapper commit: $(git -C gkid rev-parse HEAD)"
+
+      - name: Apply KernelSU Next 33214 spoof
+        run: |
+          chmod +x scripts/patch-gkid-ksun-33214.sh
+          scripts/patch-gkid-ksun-33214.sh gkid
+
+      - name: Configure ccache
+        run: |
+          ccache --zero-stats
+          ccache --max-size=5G
+
+      - name: Build GKID
+        working-directory: gkid
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_REPO: https://github.com/ahmed-alnassif/GKI-Duchamp-6.1
+          KSU: KSUN
+          KSU_COMPAT: "false"
+          KSU_SUSFS: "false"
+          TODO: kernel
+          STATUS: BETA
+          TEST: "no"
+          LTO: thinLTO
+          CLEAN_LTO_CACHE: "true"
+          DROIDSPACES: "false"
+          NH: "false"
+          BUILD_NAME: KSUN-33214
+          RUN_NUM: -r${{ github.run_number }}
+        run: |
+          chmod +x ./*.sh py/*.py
+          ./build.sh
+
+      - name: Verify output and write checksums
+        run: |
+          test -d gkid/artifacts
+          find gkid/artifacts -maxdepth 1 -type f -printf '%f\n' | sort
+          cd gkid/artifacts
+          sha256sum ./*.zip > checksums-sha256.txt
+          grep -n "Forcing KernelSU-Next reported version to 33214" build.log
+          grep -n "KernelSU-Next version: 33214" build.log
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Upload GKID build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKID-KernelSU-Next-spoof-33214-${{ github.run_number }}
+          path: |
+            gkid/artifacts/*.zip
+            gkid/artifacts/*.txt
+            gkid/artifacts/build.log
+          if-no-files-found: warn
+          retention-days: 7
