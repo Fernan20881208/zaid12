@@ -6,7 +6,7 @@ BUILD_SH="$ROOT/build.sh"
 KSUN_COMMIT="e7536f02c4e5bb247239264b99c00d21d6923b2f"
 KSUN_SUSFS_COMMIT="ecb649019c19fa884f3b293fe3e847aaf804d0c2"
 SPOOF_VERSION="33214"
-BUILD_REVISION="2"
+BUILD_REVISION="3"
 
 if [[ ! -f "$BUILD_SH" ]]; then
   echo "ERROR: no se encontró $BUILD_SH" >&2
@@ -40,29 +40,80 @@ block_start = text.index('if [ "$KSU" = "KSUN" ]; then')
 block_end = text.index('if [ "$KSU_COMPAT" = "true" ]; then', block_start)
 block = text[block_start:block_end]
 
-# The GKID wrapper applies a small namespace include patch and then the complete
-# SUSFS patch applies the same first hunk again. That duplicate produced
-# fs/namespace.c.rej. Let the complete SUSFS patch apply all of its hunks once.
-duplicate_patch = '    patch -p1 --fuzz=3 < "$KERNEL_PATCHES/susfs/fs_namespace.patch"\n'
-if block.count(duplicate_patch) != 1:
-    raise SystemExit("No se encontró exactamente un parche namespace duplicado en el bloque KSUN")
-block = block.replace(
-    duplicate_patch,
-    '    log "Skipping duplicate GKID namespace pre-patch; full SUSFS patch will apply it"\n',
-    1,
+# GKID-NH has an extra trace-hook include in fs/namespace.c. The wrapper's
+# compatibility patch places the SUSFS declarations correctly around it. The
+# full upstream SUSFS patch contains the same declaration hunk with incompatible
+# context, so remove only that one hunk and apply every remaining hunk strictly.
+namespace_patch = '    patch -p1 --fuzz=3 < "$KERNEL_PATCHES/susfs/fs_namespace.patch"\n'
+compat_prelude = '''    patch -p1 --fuzz=3 < "$KERNEL_PATCHES/susfs/fs_namespace.patch"
+    SUSFS_FULL_PATCH="$SUSFS_PATCHES/50_add_susfs_in_${SUSFS_PATCH}.patch"
+    SUSFS_COMPAT_PATCH="$WORKDIR/susfs-kernel-gkid-nh.patch"
+    python3 - "$SUSFS_FULL_PATCH" "$SUSFS_COMPAT_PATCH" <<'PYSUSFS'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+out = []
+removed = []
+in_namespace = False
+skipping = False
+
+for line in lines:
+    if line.startswith("diff --git "):
+        if skipping:
+            raise SystemExit("El primer hunk de namespace.c terminó de forma inesperada")
+        in_namespace = line.startswith("diff --git a/fs/namespace.c b/fs/namespace.c")
+
+    if in_namespace and line.startswith("@@ -32,10 +32,21 @@"):
+        if removed:
+            raise SystemExit("Se encontró más de un hunk de compatibilidad namespace.c")
+        skipping = True
+        removed.append(line)
+        continue
+
+    if skipping:
+        if line.startswith("@@ "):
+            skipping = False
+            out.append(line)
+        elif line.startswith("diff --git "):
+            raise SystemExit("No se encontró el siguiente hunk de namespace.c")
+        else:
+            removed.append(line)
+        continue
+
+    out.append(line)
+
+removed_text = "".join(removed)
+required = (
+    "#include <linux/susfs_def.h>",
+    "extern bool susfs_is_current_ksu_domain(void);",
+    "#define CL_COPY_MNT_NS BIT(25)",
 )
+if not removed or not all(marker in removed_text for marker in required):
+    raise SystemExit("El hunk namespace.c de SUSFS no coincide con la compatibilidad esperada")
+
+result = "".join(out)
+if result == source.read_text(encoding="utf-8"):
+    raise SystemExit("No se modificó el parche SUSFS")
+target.write_text(result, encoding="utf-8")
+print("Removed one incompatible duplicate namespace.c hunk from SUSFS patch")
+PYSUSFS
+'''
+if block.count(namespace_patch) != 1:
+    raise SystemExit("No se encontró exactamente un parche namespace de compatibilidad en KSUN")
+block = block.replace(namespace_patch, compat_prelude, 1)
 
 soft_patch = '    patch -p1 --fuzz=3 < $SUSFS_PATCHES/50_add_susfs_in_${SUSFS_PATCH}.patch || echo "Common kernel SUSFS patch failed."\n'
-strict_patch = '''    if ! patch -p1 --fuzz=3 < "$SUSFS_PATCHES/50_add_susfs_in_${SUSFS_PATCH}.patch"; then
-      echo "ERROR: el parche completo de SUSFS no se aplicó limpiamente" >&2
-      find . -type f -name '*.rej' -print -exec cat {} \
-        \; >&2
+strict_patch = '''    if ! patch -p1 --fuzz=3 < "$SUSFS_COMPAT_PATCH"; then
+      echo "ERROR: el parche SUSFS compatible con GKID-NH no se aplicó limpiamente" >&2
+      find . -type f -name '*.rej' -print >&2
       exit 1
     fi
     if find . -type f -name '*.rej' -print -quit | grep -q .; then
       echo "ERROR: quedaron archivos .rej después de aplicar SUSFS" >&2
-      find . -type f -name '*.rej' -print -exec cat {} \
-        \; >&2
+      find . -type f -name '*.rej' -print >&2
       exit 1
     fi
 '''
@@ -113,4 +164,4 @@ build_path.write_text(text, encoding="utf-8")
 PY
 
 echo "GKID patch revision $BUILD_REVISION: KSUN normal=$KSUN_COMMIT, KSUN+SUSFS=$KSUN_SUSFS_COMMIT, reported=$SPOOF_VERSION"
-grep -nE 'KernelSU-Next/KernelSU-Next|pershoot/KernelSU-Next|Forcing KernelSU-Next|Skipping duplicate' "$BUILD_SH"
+grep -nE 'KernelSU-Next/KernelSU-Next|pershoot/KernelSU-Next|Forcing KernelSU-Next|SUSFS_COMPAT_PATCH' "$BUILD_SH"
