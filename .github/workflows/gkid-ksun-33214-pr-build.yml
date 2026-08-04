@@ -1,0 +1,136 @@
+name: GKID KSUN 33214 SUSFS NetHunter PR Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gkid-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.head_ref == 'gkid-ksun-33214'
+    name: GKID KSUN 33214 + SUSFS + NetHunter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison ccache cpio curl dwarves flex gh git libelf-dev \
+            libssl-dev lz4 python3 python3-lxml unzip wget zip zstd
+
+      - name: Fetch pinned GKID source
+        run: |
+          git init gkid
+          git -C gkid remote add origin https://github.com/ahmed-alnassif/GKI-Duchamp.git
+          git -C gkid fetch --depth=1 origin 3711b114ab339092ad5c5ba6afd53aa769234ba1
+          git -C gkid checkout --detach FETCH_HEAD
+          echo "GKID wrapper commit: $(git -C gkid rev-parse HEAD)"
+
+      - name: Apply KernelSU Next 33214 spoof
+        run: |
+          chmod +x scripts/patch-gkid-ksun-33214.sh
+          scripts/patch-gkid-ksun-33214.sh gkid
+
+      - name: Configure ccache
+        run: |
+          ccache --zero-stats
+          ccache --max-size=5G
+
+      - name: Build GKID with SUSFS and NetHunter
+        working-directory: gkid
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_REPO: https://github.com/ahmed-alnassif/GKI-Duchamp-6.1
+          KSU: KSUN
+          KSU_COMPAT: "false"
+          KSU_SUSFS: "true"
+          TODO: kernel
+          STATUS: BETA
+          TEST: "no"
+          LTO: thinLTO
+          CLEAN_LTO_CACHE: "true"
+          DROIDSPACES: "false"
+          NH: "true"
+          BUILD_NAME: KSUN-33214-SUSFS-NH
+          RUN_NUM: -r${{ github.run_number }}
+        run: |
+          chmod +x ./*.sh py/*.py
+          ./build.sh
+
+      - name: Package NetHunter wireless module
+        run: |
+          set -euo pipefail
+          NAME="WirelessKSU"
+          WKSU="gkid/modules/$NAME"
+          OUTDIR="gkid/out"
+          KSRC="gkid/ksrc"
+          ARTIFACTS="gkid/artifacts"
+
+          mkdir -p "$WKSU/lkm" "$WKSU/system/etc/firmware/rtw88" "$ARTIFACTS"
+
+          for mod in rfkill cfg80211 mac80211; do
+            find "$OUTDIR" -iname "$mod*.ko" -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+          done
+          find "$OUTDIR/drivers/net/wireless/realtek/rtw88" -name '*.ko' -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+          find "$OUTDIR/drivers/staging/r8188eu" -name '*.ko' -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+
+          if compgen -G "$KSRC/drivers/net/wireless/realtek/rtw88/firmware/*" > /dev/null; then
+            cp -f "$KSRC"/drivers/net/wireless/realtek/rtw88/firmware/* "$WKSU/system/etc/firmware/rtw88/"
+          fi
+
+          if ! compgen -G "$WKSU/lkm/*.ko" > /dev/null; then
+            echo "No se encontraron módulos inalámbricos .ko" >&2
+            exit 1
+          fi
+
+          sed -i "s/^version=.*/version=${RELEASE}-${VARIANT}/" "$WKSU/module.prop"
+          (
+            cd "$WKSU"
+            zip -9 -r "$GITHUB_WORKSPACE/$ARTIFACTS/$NAME-${RELEASE}-${VARIANT}.zip" .
+          )
+
+      - name: Verify build and write checksums
+        run: |
+          set -euo pipefail
+          test -d gkid/artifacts
+          compgen -G 'gkid/artifacts/GKID-*.zip' > /dev/null
+          compgen -G 'gkid/artifacts/WirelessKSU-*.zip' > /dev/null
+          grep -n "Forcing KernelSU-Next reported version to 33214" gkid/artifacts/build.log
+          grep -n "KernelSU-Next version: 33214" gkid/artifacts/build.log
+          grep -n "SUSFS included" gkid/artifacts/build.log
+          test "$(git -C gkid/ksrc branch --show-current)" = "GKID-NH"
+          find gkid/artifacts -maxdepth 1 -type f -printf '%f\n' | sort
+          cd gkid/artifacts
+          sha256sum ./*.zip > checksums-sha256.txt
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Upload GKID build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKID-KSUN-33214-SUSFS-NetHunter-${{ github.run_number }}
+          path: |
+            gkid/artifacts/*.zip
+            gkid/artifacts/*.txt
+            gkid/artifacts/build.log
+          if-no-files-found: warn
+          retention-days: 7
