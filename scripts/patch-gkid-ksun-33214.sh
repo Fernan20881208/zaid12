@@ -6,6 +6,7 @@ BUILD_SH="$ROOT/build.sh"
 KSUN_COMMIT="e7536f02c4e5bb247239264b99c00d21d6923b2f"
 KSUN_SUSFS_COMMIT="ecb649019c19fa884f3b293fe3e847aaf804d0c2"
 SPOOF_VERSION="33214"
+BUILD_REVISION="2"
 
 if [[ ! -f "$BUILD_SH" ]]; then
   echo "ERROR: no se encontró $BUILD_SH" >&2
@@ -111,5 +112,5 @@ text = text.replace(anchor, insert, 1)
 build_path.write_text(text, encoding="utf-8")
 PY
 
-echo "GKID patched: KSUN normal=$KSUN_COMMIT, KSUN+SUSFS=$KSUN_SUSFS_COMMIT, reported=$SPOOF_VERSION"
+echo "GKID patch revision $BUILD_REVISION: KSUN normal=$KSUN_COMMIT, KSUN+SUSFS=$KSUN_SUSFS_COMMIT, reported=$SPOOF_VERSION"
 grep -nE 'KernelSU-Next/KernelSU-Next|pershoot/KernelSU-Next|Forcing KernelSU-Next|Skipping duplicate' "$BUILD_SH"
