@@ -36,14 +36,17 @@ jobs:
 
       - name: Fetch pinned GKID source
         run: |
+          set -euo pipefail
           git init gkid
           git -C gkid remote add origin https://github.com/ahmed-alnassif/GKI-Duchamp.git
           git -C gkid fetch --depth=1 origin 3711b114ab339092ad5c5ba6afd53aa769234ba1
           git -C gkid checkout --detach FETCH_HEAD
+          test "$(git -C gkid rev-parse HEAD)" = "3711b114ab339092ad5c5ba6afd53aa769234ba1"
           echo "GKID wrapper commit: $(git -C gkid rev-parse HEAD)"
 
-      - name: Apply KernelSU Next 33214 spoof
+      - name: Apply KernelSU Next 33214 and SUSFS compatibility patch
         run: |
+          set -euo pipefail
           chmod +x scripts/patch-gkid-ksun-33214.sh
           scripts/patch-gkid-ksun-33214.sh gkid
 
@@ -70,8 +73,44 @@ jobs:
           BUILD_NAME: KSUN-33214-SUSFS-NH
           RUN_NUM: -r${{ github.run_number }}
         run: |
+          set -euo pipefail
           chmod +x ./*.sh py/*.py
           ./build.sh
+
+      - name: Validate kernel tree and collect flashable ZIP
+        run: |
+          set -euo pipefail
+
+          test -f gkid/out/arch/arm64/boot/Image
+          test -f gkid/out/.config
+          grep -q '^CONFIG_KSU=y$' gkid/out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' gkid/out/.config
+
+          if find gkid/ksrc -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "Se encontraron rechazos de parches:" >&2
+            find gkid/ksrc -type f -name '*.rej' -print -exec cat {} \; >&2
+            exit 1
+          fi
+
+          test "$(git -C gkid/ksrc rev-parse --abbrev-ref HEAD)" = "GKID-NH"
+          test "$(git -C gkid/ksrc/KernelSU-Next rev-parse HEAD)" = "ecb649019c19fa884f3b293fe3e847aaf804d0c2"
+
+          mkdir -p gkid/artifacts
+          mapfile -t FLASHABLES < <(find gkid -maxdepth 1 -type f -name 'GKID-*.zip' -print | sort)
+          if [ "${#FLASHABLES[@]}" -ne 1 ]; then
+            echo "Se esperaba exactamente un ZIP flasheable GKID; encontrados: ${#FLASHABLES[@]}" >&2
+            find gkid -maxdepth 2 -type f -name '*.zip' -print >&2
+            exit 1
+          fi
+
+          FLASHABLE="${FLASHABLES[0]}"
+          unzip -t "$FLASHABLE"
+          unzip -Z1 "$FLASHABLE" | grep -qx 'Image'
+          unzip -Z1 "$FLASHABLE" | grep -qx 'anykernel.sh'
+
+          cp -f "$FLASHABLE" gkid/artifacts/
+          basename "$FLASHABLE" | tee gkid/artifacts/flashable-name.txt
+          ls -lh gkid/artifacts/"$(basename "$FLASHABLE")"
 
       - name: Package NetHunter wireless module
         run: |
@@ -104,6 +143,7 @@ jobs:
             cd "$WKSU"
             zip -9 -r "$GITHUB_WORKSPACE/$ARTIFACTS/$NAME-${RELEASE}-${VARIANT}.zip" .
           )
+          unzip -t "$ARTIFACTS/$NAME-${RELEASE}-${VARIANT}.zip"
 
       - name: Verify build and write checksums
         run: |
@@ -112,12 +152,15 @@ jobs:
           compgen -G 'gkid/artifacts/GKID-*.zip' > /dev/null
           compgen -G 'gkid/artifacts/WirelessKSU-*.zip' > /dev/null
           grep -n "Forcing KernelSU-Next reported version to 33214" gkid/artifacts/build.log
+          grep -n "KernelSU-Next source commit: ecb649019c19fa884f3b293fe3e847aaf804d0c2" gkid/artifacts/build.log
           grep -n "KernelSU-Next version: 33214" gkid/artifacts/build.log
           grep -n "SUSFS included" gkid/artifacts/build.log
-          test "$(git -C gkid/ksrc branch --show-current)" = "GKID-NH"
+          ! grep -q "Common kernel SUSFS patch failed" gkid/artifacts/build.log
+          ! grep -q "hunks FAILED" gkid/artifacts/build.log
           find gkid/artifacts -maxdepth 1 -type f -printf '%f\n' | sort
           cd gkid/artifacts
           sha256sum ./*.zip > checksums-sha256.txt
+          cat checksums-sha256.txt
 
       - name: Show ccache statistics
         if: always()
