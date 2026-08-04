@@ -1,4 +1,4 @@
-name: Build GKID KSUN 33214
+name: Build GKID KSUN 33214 SUSFS NetHunter
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    name: GKID KernelSU Next spoof 33214
+    name: GKID KSUN 33214 + SUSFS + NetHunter
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -51,35 +51,73 @@ jobs:
           ccache --zero-stats
           ccache --max-size=5G
 
-      - name: Build GKID
+      - name: Build GKID with SUSFS and NetHunter
         working-directory: gkid
         env:
           GH_TOKEN: ${{ github.token }}
           KERNEL_REPO: https://github.com/ahmed-alnassif/GKI-Duchamp-6.1
           KSU: KSUN
           KSU_COMPAT: "false"
-          KSU_SUSFS: "false"
+          KSU_SUSFS: "true"
           TODO: kernel
           STATUS: BETA
           TEST: "no"
           LTO: thinLTO
           CLEAN_LTO_CACHE: "true"
           DROIDSPACES: "false"
-          NH: "false"
-          BUILD_NAME: KSUN-33214
+          NH: "true"
+          BUILD_NAME: KSUN-33214-SUSFS-NH
           RUN_NUM: -r${{ github.run_number }}
         run: |
           chmod +x ./*.sh py/*.py
           ./build.sh
 
-      - name: Verify output and write checksums
+      - name: Package NetHunter wireless module
         run: |
+          set -euo pipefail
+          NAME="WirelessKSU"
+          WKSU="gkid/modules/$NAME"
+          OUTDIR="gkid/out"
+          KSRC="gkid/ksrc"
+          ARTIFACTS="gkid/artifacts"
+
+          mkdir -p "$WKSU/lkm" "$WKSU/system/etc/firmware/rtw88" "$ARTIFACTS"
+
+          for mod in rfkill cfg80211 mac80211; do
+            find "$OUTDIR" -iname "$mod*.ko" -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+          done
+
+          find "$OUTDIR/drivers/net/wireless/realtek/rtw88" -name '*.ko' -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+          find "$OUTDIR/drivers/staging/r8188eu" -name '*.ko' -exec cp -f {} "$WKSU/lkm/" \; 2>/dev/null || true
+
+          if compgen -G "$KSRC/drivers/net/wireless/realtek/rtw88/firmware/*" > /dev/null; then
+            cp -f "$KSRC"/drivers/net/wireless/realtek/rtw88/firmware/* "$WKSU/system/etc/firmware/rtw88/"
+          fi
+
+          if ! compgen -G "$WKSU/lkm/*.ko" > /dev/null; then
+            echo "No se encontraron módulos inalámbricos .ko" >&2
+            exit 1
+          fi
+
+          sed -i "s/^version=.*/version=${RELEASE}-${VARIANT}/" "$WKSU/module.prop"
+          (
+            cd "$WKSU"
+            zip -9 -r "$GITHUB_WORKSPACE/$ARTIFACTS/$NAME-${RELEASE}-${VARIANT}.zip" .
+          )
+
+      - name: Verify build and write checksums
+        run: |
+          set -euo pipefail
           test -d gkid/artifacts
+          compgen -G 'gkid/artifacts/GKID-*.zip' > /dev/null
+          compgen -G 'gkid/artifacts/WirelessKSU-*.zip' > /dev/null
+          grep -n "Forcing KernelSU-Next reported version to 33214" gkid/artifacts/build.log
+          grep -n "KernelSU-Next version: 33214" gkid/artifacts/build.log
+          grep -n "SUSFS included" gkid/artifacts/build.log
+          test "$(git -C gkid/ksrc branch --show-current)" = "GKID-NH"
           find gkid/artifacts -maxdepth 1 -type f -printf '%f\n' | sort
           cd gkid/artifacts
           sha256sum ./*.zip > checksums-sha256.txt
-          grep -n "Forcing KernelSU-Next reported version to 33214" build.log
-          grep -n "KernelSU-Next version: 33214" build.log
 
       - name: Show ccache statistics
         if: always()
@@ -89,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GKID-KernelSU-Next-spoof-33214-${{ github.run_number }}
+          name: GKID-KSUN-33214-SUSFS-NetHunter-${{ github.run_number }}
           path: |
             gkid/artifacts/*.zip
             gkid/artifacts/*.txt
