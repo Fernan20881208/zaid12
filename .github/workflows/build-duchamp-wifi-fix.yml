@@ -1,0 +1,67 @@
+name: Build POCO X6 Pro Wi-Fi WPA2 fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - agent/duchamp-wifi-wpa2-rro
+    paths:
+      - .github/workflows/build-duchamp-wifi-fix.yml
+      - duchamp-wifi-fix/**
+  pull_request:
+    paths:
+      - .github/workflows/build-duchamp-wifi-fix.yml
+      - duchamp-wifi-fix/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: duchamp-wifi-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile, sign and package KernelSU module
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android API 36 build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build and validate module
+        shell: bash
+        env:
+          BUILD_TOOLS_VERSION: 36.0.0
+          DUCHAMP_OUTPUT_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          chmod +x duchamp-wifi-fix/build.sh
+          duchamp-wifi-fix/build.sh
+
+      - name: Upload KernelSU module
+        uses: actions/upload-artifact@v4
+        with:
+          name: POCO-X6-Pro-WiFi-WPA2-Compat-v1.0-KSU
+          path: |
+            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v1.0-KSU.zip
+            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v1.0-KSU.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
