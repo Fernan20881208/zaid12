@@ -1,29 +1,48 @@
-POCO X6 Pro Wi-Fi WPA2 Compatibility 1.0
+POCO X6 Pro Wi-Fi WPA2 Compatibility 2.0
 
-Dispositivo objetivo: Xiaomi POCO X6 Pro / duchamp
-ROM comprobada: Evolution X, Android 16 (API 36)
+Dispositivo: Xiaomi POCO X6 Pro / duchamp
+ROM objetivo: Evolution X oficial, Android 17
 
-Funcion:
-- Instala un Runtime Resource Overlay estatico.
-- Establece config_wifiSaeUpgradeEnabled en false.
-- Establece config_wifiSaeUpgradeOffloadEnabled en false a nivel de recurso.
-- No modifica las particiones fisicas ni la contrasena Wi-Fi.
+QUE HACE
+- Mantiene el RRO que desactiva los recursos de auto-upgrade WPA2-SAE.
+- Antes del servicio Wi-Fi, corrige solo perfiles WPA2 deshabilitados por
+  NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD.
+- Convierte localmente la frase WPA2 en su PMK hexadecimal estandar para que
+  AOSP no agregue SAE/Cross-AKM a ese perfil.
+- Vuelve a habilitar el perfil corregido.
+- No usa red y no registra SSID, contrasena ni PMK.
 
-Instalacion:
-1. Instala el ZIP interior desde KernelSU Next. No uses recovery.
-2. Reinicia Android.
-3. Olvida la red Wi-Fi afectada.
-4. Vuelve a agregarla y prueba la conexion.
+INSTALACION
+1. Conserva guardada la red que aparece con "contrasena incorrecta".
+2. NO la olvides antes del primer reinicio.
+3. Instala este ZIP desde KernelSU Next, encima de v1 si estaba instalada.
+4. Reinicia Android y prueba la conexion.
 
-Comprobacion:
+Si la red todavia no estaba guardada, intenta conectarla una vez y reinicia
+despues del fallo para que el modulo pueda corregir el perfil.
+
+COMPROBACION
 su
-cmd overlay list --user 0 | grep -i duchamp
+cat /data/adb/duchamp_wifi_wpa2_compat/patch.log
+
+Primer cambio esperado:
+patched=1
+status=patched
+
+Despues es normal:
+status=no-change
+
+El log nunca debe contener credenciales.
+
+RRO:
 cmd overlay lookup --user 0 com.android.wifi.resources com.android.wifi.resources:bool/config_wifiSaeUpgradeEnabled
-dumpsys wifi | grep -iE 'mIsWpa3SaeUpgradeOffloadEnabled|config_wifiSaeUpgradeEnabled'
 
-El comando lookup debe devolver false. La variable de offload puede seguir
-mostrando true por una bandera AOSP de solo lectura; con el perfil WPA2 puro no
-deberia introducir SAE en esa red.
+El resultado debe ser false. El offload interno puede seguir mostrando true;
+la representacion PMK de v2 es la que evita que ese camino agregue SAE.
 
-Desinstalacion:
-- Elimina el modulo desde KernelSU Next y reinicia.
+RESPALDO Y DESINSTALACION
+- La primera configuracion original queda, con permisos 0600, en:
+  /data/adb/duchamp_wifi_wpa2_compat/WifiConfigStore.xml.before-pmk
+- Ese respaldo contiene secretos Wi-Fi: no lo compartas.
+- Para revertir, elimina el modulo, reinicia y luego olvida y vuelve a agregar
+  las redes afectadas.
