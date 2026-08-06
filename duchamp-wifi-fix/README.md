@@ -34,6 +34,12 @@ SSID, contraseña ni PMK, y GitHub Actions solo compila código y datos de prueb
 sintéticos. Ninguna configuración real del teléfono forma parte del repositorio
 o del artefacto.
 
+La condición usada está en el método
+[`addPskSaeUpgradableTypeFlagsIfSupported`](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/tags/android-17.0.0_r1/service/java/com/android/server/wifi/SupplicantStaNetworkHalAidlImpl.java)
+de AOSP Android 17: una clave de 64 caracteres hexadecimales no recibe los tipos
+SAE actualizables. La activación del offload puede verse en
+[`ClientModeImpl`](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/tags/android-17.0.0_r1/service/java/com/android/server/wifi/ClientModeImpl.java).
+
 ## Compilación en GitHub Actions
 
 El workflow **Build POCO X6 Pro Wi-Fi WPA2 fix**:
