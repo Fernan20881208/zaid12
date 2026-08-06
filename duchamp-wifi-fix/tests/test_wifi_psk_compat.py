@@ -40,6 +40,69 @@ FIXTURE = """<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
         <string name="DisableReason">NETWORK_SELECTION_ENABLE</string>
       </NetworkStatus>
     </Network>
+    <Network>
+      <WifiConfiguration>
+        <string name="SSID">&quot;IEEE&quot;</string>
+        <string name="PreSharedKey">&quot;password&quot;</string>
+        <int name="Status" value="2" />
+        <SecurityParamsList>
+          <SecurityParams>
+            <int name="SecurityType" value="2" />
+            <boolean name="IsAddedByAutoUpgrade" value="false" />
+          </SecurityParams>
+          <SecurityParams>
+            <int name="SecurityType" value="4" />
+            <boolean name="IsAddedByAutoUpgrade" value="true" />
+          </SecurityParams>
+        </SecurityParamsList>
+      </WifiConfiguration>
+      <NetworkStatus>
+        <string name="SelectionStatus">NETWORK_SELECTION_ENABLED</string>
+        <string name="DisableReason">NETWORK_SELECTION_ENABLE</string>
+      </NetworkStatus>
+    </Network>
+    <Network>
+      <WifiConfiguration>
+        <string name="SSID">&quot;EXPLICIT-SAE&quot;</string>
+        <string name="PreSharedKey">&quot;leave-this-password&quot;</string>
+        <int name="Status" value="2" />
+        <SecurityParamsList>
+          <SecurityParams>
+            <int name="SecurityType" value="2" />
+            <boolean name="IsAddedByAutoUpgrade" value="false" />
+          </SecurityParams>
+          <SecurityParams>
+            <int name="SecurityType" value="4" />
+            <boolean name="IsAddedByAutoUpgrade" value="false" />
+          </SecurityParams>
+        </SecurityParamsList>
+      </WifiConfiguration>
+      <NetworkStatus>
+        <string name="SelectionStatus">NETWORK_SELECTION_ENABLED</string>
+        <string name="DisableReason">NETWORK_SELECTION_ENABLE</string>
+      </NetworkStatus>
+    </Network>
+    <Network>
+      <WifiConfiguration>
+        <string name="SSID">&quot;IEEE&quot;</string>
+        <string name="PreSharedKey">f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e</string>
+        <int name="Status" value="2" />
+        <SecurityParamsList>
+          <SecurityParams>
+            <int name="SecurityType" value="2" />
+            <boolean name="IsAddedByAutoUpgrade" value="false" />
+          </SecurityParams>
+          <SecurityParams>
+            <int name="SecurityType" value="4" />
+            <boolean name="IsAddedByAutoUpgrade" value="true" />
+          </SecurityParams>
+        </SecurityParamsList>
+      </WifiConfiguration>
+      <NetworkStatus>
+        <string name="SelectionStatus">NETWORK_SELECTION_ENABLED</string>
+        <string name="DisableReason">NETWORK_SELECTION_ENABLE</string>
+      </NetworkStatus>
+    </Network>
   </NetworkList>
 </WifiConfigStoreData>
 """
@@ -70,15 +133,20 @@ def main() -> int:
         second = root / "second.xml"
         original.write_text(FIXTURE, encoding="utf-8")
 
-        assert run(binary, original, first) == "patched=1\n"
+        assert run(binary, original, first) == "patched=3\n"
         output = first.read_text(encoding="utf-8")
-        assert f'<string name="PreSharedKey">{EXPECTED_PMK}</string>' in output
+        assert output.count(
+            f'<string name="PreSharedKey">{EXPECTED_PMK}</string>'
+        ) == 3
         assert '<int name="Status" value="2" />' in output
         assert "NETWORK_SELECTION_PERMANENTLY_DISABLED" not in output
         assert "NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD" not in output
-        assert output.count("NETWORK_SELECTION_ENABLED") == 2
-        assert output.count("NETWORK_SELECTION_ENABLE</string>") == 2
+        assert output.count("NETWORK_SELECTION_ENABLED") == 5
+        assert output.count("NETWORK_SELECTION_ENABLE</string>") == 5
         assert "&quot;not-a-real-password&quot;" in output
+        assert "&quot;leave-this-password&quot;" in output
+        assert 'name="IsAddedByAutoUpgrade" value="true"' not in output
+        assert output.count('name="SecurityType" value="4"') == 1
 
         assert run(binary, first, second) == "patched=0\n"
         assert first.read_bytes() == second.read_bytes()

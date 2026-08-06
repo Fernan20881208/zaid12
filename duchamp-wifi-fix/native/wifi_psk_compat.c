@@ -308,6 +308,92 @@ static int replace_first_literal(char **source, size_t *source_len,
     return 1;
 }
 
+static int is_auto_upgrade_sae_params(const char *block, size_t block_len) {
+    static const char sae_security_type[] = "name=\"SecurityType\" value=\"4\"";
+    static const char added_by_auto_upgrade[] =
+            "name=\"IsAddedByAutoUpgrade\" value=\"true\"";
+    return find_bytes(block, block + block_len, sae_security_type) != NULL
+            && find_bytes(block, block + block_len, added_by_auto_upgrade) != NULL;
+}
+
+static int contains_auto_upgrade_sae_params(const char *source, size_t source_len) {
+    static const char params_open[] = "<SecurityParams>";
+    static const char params_close[] = "</SecurityParams>";
+    const char *cursor = source;
+    const char *end = source + source_len;
+
+    while (cursor < end) {
+        const char *start = find_bytes(cursor, end, params_open);
+        if (start == NULL) {
+            return 0;
+        }
+        const char *finish = find_bytes(start, end, params_close);
+        if (finish == NULL) {
+            return -1;
+        }
+        finish += strlen(params_close);
+        if (is_auto_upgrade_sae_params(start, (size_t)(finish - start))) {
+            return 1;
+        }
+        cursor = finish;
+    }
+    return 0;
+}
+
+static int remove_auto_upgrade_sae_params(char **source, size_t *source_len) {
+    static const char params_open[] = "<SecurityParams>";
+    static const char params_close[] = "</SecurityParams>";
+    size_t search_offset = 0U;
+    int removed = 0;
+
+    while (search_offset < *source_len) {
+        const char *start = find_bytes(*source + search_offset,
+                *source + *source_len, params_open);
+        if (start == NULL) {
+            break;
+        }
+        const char *finish = find_bytes(start, *source + *source_len, params_close);
+        if (finish == NULL) {
+            return -1;
+        }
+        finish += strlen(params_close);
+        const size_t begin = (size_t)(start - *source);
+        const size_t end = (size_t)(finish - *source);
+        if (!is_auto_upgrade_sae_params(start, end - begin)) {
+            search_offset = end;
+            continue;
+        }
+
+        size_t updated_len = 0U;
+        char *updated = replace_range(*source, *source_len,
+                begin, end, "", 0U, &updated_len);
+        if (updated == NULL) {
+            return -1;
+        }
+        free(*source);
+        *source = updated;
+        *source_len = updated_len;
+        search_offset = begin;
+        ++removed;
+    }
+    return removed;
+}
+
+static int is_raw_pmk(const char *value, size_t value_len) {
+    if (value_len != 64U) {
+        return 0;
+    }
+    for (size_t i = 0U; i < value_len; ++i) {
+        const unsigned char ch = (unsigned char)value[i];
+        if (!((ch >= '0' && ch <= '9')
+                || (ch >= 'a' && ch <= 'f')
+                || (ch >= 'A' && ch <= 'F'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int append_utf8(char *output, size_t output_capacity, size_t *output_len,
         uint32_t codepoint) {
     uint8_t encoded[4];
@@ -471,6 +557,8 @@ static int transform_network(const char *network, size_t network_len,
     size_t passphrase_alloc_len = 0U;
     uint8_t pmk[32];
     char pmk_hex[65];
+    int auto_upgrade_sae = 0;
+    int changed = 0;
     int result = 0;
 
     *transformed = NULL;
@@ -478,8 +566,13 @@ static int transform_network(const char *network, size_t network_len,
     memset(pmk, 0, sizeof(pmk));
     memset(pmk_hex, 0, sizeof(pmk_hex));
 
-    if (find_bytes(network, network + network_len, wrong_password) == NULL
-            || find_bytes(network, network + network_len, psk_security_type) == NULL) {
+    auto_upgrade_sae = contains_auto_upgrade_sae_params(network, network_len);
+    if (auto_upgrade_sae < 0) {
+        return -1;
+    }
+    if (find_bytes(network, network + network_len, psk_security_type) == NULL
+            || (find_bytes(network, network + network_len, wrong_password) == NULL
+                && auto_upgrade_sae == 0)) {
         return 0;
     }
     if (extract_string_element(network, network_len, "SSID", &ssid_start, &ssid_end) != 1
@@ -495,52 +588,82 @@ static int transform_network(const char *network, size_t network_len,
     }
     ssid_alloc_len = ssid_len + 1U;
     passphrase_alloc_len = passphrase_len + 1U;
-    if (ssid_len < 2U || passphrase_len < 2U
-            || ssid[0] != '"' || ssid[ssid_len - 1U] != '"'
-            || passphrase[0] != '"' || passphrase[passphrase_len - 1U] != '"') {
+    if (ssid_len < 2U || ssid[0] != '"' || ssid[ssid_len - 1U] != '"') {
         goto cleanup;
     }
 
     memmove(ssid, ssid + 1U, ssid_len - 2U);
     ssid_len -= 2U;
     ssid[ssid_len] = '\0';
-    memmove(passphrase, passphrase + 1U, passphrase_len - 2U);
-    passphrase_len -= 2U;
-    passphrase[passphrase_len] = '\0';
-    if (ssid_len == 0U || ssid_len > 32U || passphrase_len < 8U || passphrase_len > 63U) {
+    if (ssid_len == 0U || ssid_len > 32U) {
         goto cleanup;
     }
 
-    pbkdf2_sha1((const uint8_t *)passphrase, passphrase_len,
-            (const uint8_t *)ssid, ssid_len, pmk);
-    static const char hex_digits[] = "0123456789abcdef";
-    for (size_t i = 0U; i < sizeof(pmk); ++i) {
-        pmk_hex[i * 2U] = hex_digits[pmk[i] >> 4U];
-        pmk_hex[i * 2U + 1U] = hex_digits[pmk[i] & 0x0fU];
-    }
-    pmk_hex[64] = '\0';
+    if (passphrase_len >= 2U
+            && passphrase[0] == '"' && passphrase[passphrase_len - 1U] == '"') {
+        memmove(passphrase, passphrase + 1U, passphrase_len - 2U);
+        passphrase_len -= 2U;
+        passphrase[passphrase_len] = '\0';
+        if (passphrase_len < 8U || passphrase_len > 63U) {
+            goto cleanup;
+        }
 
-    const size_t psk_offset = (size_t)(psk_start - network);
-    const size_t psk_end_offset = (size_t)(psk_end - network);
-    *transformed = replace_range(network, network_len, psk_offset, psk_end_offset,
-            pmk_hex, 64U, transformed_len);
-    if (*transformed == NULL) {
-        result = -1;
+        pbkdf2_sha1((const uint8_t *)passphrase, passphrase_len,
+                (const uint8_t *)ssid, ssid_len, pmk);
+        static const char hex_digits[] = "0123456789abcdef";
+        for (size_t i = 0U; i < sizeof(pmk); ++i) {
+            pmk_hex[i * 2U] = hex_digits[pmk[i] >> 4U];
+            pmk_hex[i * 2U + 1U] = hex_digits[pmk[i] & 0x0fU];
+        }
+        pmk_hex[64] = '\0';
+
+        const size_t psk_offset = (size_t)(psk_start - network);
+        const size_t psk_end_offset = (size_t)(psk_end - network);
+        *transformed = replace_range(network, network_len,
+                psk_offset, psk_end_offset, pmk_hex, 64U, transformed_len);
+        if (*transformed == NULL) {
+            result = -1;
+            goto cleanup;
+        }
+        changed = 1;
+    } else if (is_raw_pmk(passphrase, passphrase_len)) {
+        *transformed = malloc(network_len + 1U);
+        if (*transformed == NULL) {
+            result = -1;
+            goto cleanup;
+        }
+        memcpy(*transformed, network, network_len);
+        (*transformed)[network_len] = '\0';
+        *transformed_len = network_len;
+    } else {
         goto cleanup;
     }
-    if (replace_first_literal(transformed, transformed_len,
-                status_disabled, status_enabled) < 0
-            || replace_first_literal(transformed, transformed_len,
-                selection_disabled, selection_enabled) < 0
-            || replace_first_literal(transformed, transformed_len,
-                wrong_password, disable_reason_enabled) < 0) {
+
+    const int removed_sae = remove_auto_upgrade_sae_params(transformed, transformed_len);
+    const int changed_status = replace_first_literal(transformed, transformed_len,
+            status_disabled, status_enabled);
+    const int changed_selection = replace_first_literal(transformed, transformed_len,
+            selection_disabled, selection_enabled);
+    const int changed_reason = replace_first_literal(transformed, transformed_len,
+            wrong_password, disable_reason_enabled);
+    if (removed_sae < 0 || changed_status < 0
+            || changed_selection < 0 || changed_reason < 0) {
         free(*transformed);
         *transformed = NULL;
         *transformed_len = 0U;
         result = -1;
         goto cleanup;
     }
-    result = 1;
+    if (removed_sae > 0 || changed_status > 0
+            || changed_selection > 0 || changed_reason > 0) {
+        changed = 1;
+    }
+    result = changed ? 1 : 0;
+    if (result == 0) {
+        free(*transformed);
+        *transformed = NULL;
+        *transformed_len = 0U;
+    }
 
 cleanup:
     if (ssid != NULL) {

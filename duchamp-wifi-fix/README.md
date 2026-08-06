@@ -1,4 +1,4 @@
-# POCO X6 Pro Wi-Fi WPA2 Compatibility v2
+# POCO X6 Pro Wi-Fi WPA2 Compatibility v2.1
 
 Módulo para KernelSU Next dirigido al Xiaomi POCO X6 Pro (`duchamp`) con
 Evolution X oficial y Android 17.
@@ -14,24 +14,27 @@ El RRO de la v1 sí cambia `config_wifiSaeUpgradeEnabled` a `false`, pero Androi
 17 vuelve a activar el offload Cross-AKM mediante una bandera de solo lectura.
 Por eso el RRO solo no basta en esta compilación.
 
-## Cambio aplicado por la v2
+## Cambio aplicado por la v2.1
 
 El módulo conserva el RRO de la v1 y, en `post-fs-data`, antes de que arranque
 el servicio Wi-Fi:
 
-1. Busca únicamente perfiles WPA2-PSK deshabilitados por
-   `NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD`.
-2. Deriva en el teléfono el PMK WPA2 estándar con PBKDF2-HMAC-SHA1.
-3. Sustituye la frase entre comillas por su representación PMK de 64 dígitos
-   hexadecimales y vuelve a habilitar el perfil.
+1. Busca perfiles WPA2-PSK que contengan un bloque SAE marcado por Android como
+   `IsAddedByAutoUpgrade=true`, aunque el estado `WRONG_PASSWORD` no se haya
+   conservado en el XML.
+2. Elimina únicamente ese bloque SAE automático; no elimina una configuración
+   WPA3/SAE elegida explícitamente por el usuario.
+3. Deriva en el teléfono el PMK WPA2 estándar con PBKDF2-HMAC-SHA1, sustituye
+   la frase entre comillas por sus 64 dígitos hexadecimales y vuelve a habilitar
+   el perfil si estaba deshabilitado por contraseña incorrecta.
 
 Se cubren los dos lugares usados por Android: el almacén compartido se corrige
 en `post-fs-data`; el almacén cifrado del usuario 0 se corrige al desbloquear y
 se comprueba otra vez cuando termina el arranque.
 
 AOSP omite la ampliación PSK/SAE cuando el `PreSharedKey` ya es un PMK hexadecimal
-de 64 dígitos. El módulo no cambia redes que estén funcionando ni perfiles que
-tengan otro motivo de desactivación.
+de 64 dígitos. El módulo no toca perfiles WPA2 sin SAE automático, perfiles SAE
+explícitos ni redes con otro tipo de seguridad.
 
 El parcheador es un binario nativo arm64 autocontenido. No usa red, no imprime
 SSID, contraseña ni PMK, y GitHub Actions solo compila código y datos de prueba
@@ -55,14 +58,14 @@ El workflow **Build POCO X6 Pro Wi-Fi WPA2 fix**:
 - verifica el contenido del módulo y genera su SHA-256.
 
 El artefacto resultante se llama
-`POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU` y contiene el ZIP que se instala.
-La v2.0 reemplaza por completo a la v1.0; no deben instalarse como módulos separados.
+`POCO-X6-Pro-WiFi-WPA2-Compat-v2.1-KSU` y contiene el ZIP que se instala.
+La v2.1 reemplaza por completo a v1.0 y v2.0; no deben instalarse como módulos separados.
 
 ## Instalación
 
 1. Si ya intentaste conectar, conserva la red guardada aunque aparezca como
    «contraseña incorrecta». **No la olvides antes del primer reinicio.**
-2. Instala el ZIP interior v2.0 desde KernelSU Next, encima de la v1 si existe.
+2. Instala el ZIP interior v2.1 desde KernelSU Next, encima de v1 o v2.0.
 3. Reinicia Android.
 4. Desbloquea el teléfono, espera unos 15 segundos y prueba la red.
 5. Si aún muestra «contraseña incorrecta», reinicia una segunda vez. Esto solo
@@ -94,8 +97,10 @@ cmd overlay lookup --user 0 com.android.wifi.resources \
   com.android.wifi.resources:bool/config_wifiSaeUpgradeEnabled
 ```
 
-El resultado esperado es `false`. Que `mIsWpa3SaeUpgradeOffloadEnabled` siga en
-`true` es precisamente la razón por la que v2 añade la representación PMK.
+El módulo intenta mantener ese recurso en `false` y registra el resultado como
+`rro-value=false` o `rro-value=true`. Incluso si esta ROM sigue mostrando `true`,
+la representación PMK y la eliminación del bloque SAE automático son la
+corrección decisiva de v2.1.
 
 ## Respaldo y reversión
 

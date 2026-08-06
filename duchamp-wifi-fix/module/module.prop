@@ -1,6 +1,6 @@
 id=duchamp_wifi_wpa2_compat
 name=POCO X6 Pro Wi-Fi WPA2 Compatibility
-version=2.0
-versionCode=2
+version=2.1
+versionCode=3
 author=OpenAI para Zaid
-description=RRO y compatibilidad PMK local para evitar Cross-AKM WPA2-SAE en Evolution X Android 17 (duchamp). No registra ni sube credenciales.
+description=Elimina SAE agregado automáticamente y usa PMK local para evitar Cross-AKM WPA2-SAE en Evolution X Android 17 (duchamp). No registra ni sube credenciales.

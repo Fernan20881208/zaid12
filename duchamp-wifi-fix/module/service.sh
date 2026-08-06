@@ -110,6 +110,31 @@ patch_user_store() {
   return 0
 }
 
+ensure_rro() {
+  RRO_PACKAGE=com.zaid.duchamp.wifi.compat.overlay
+  RRO_RESOURCE=com.android.wifi.resources:bool/config_wifiSaeUpgradeEnabled
+
+  if pm path "$RRO_PACKAGE" >/dev/null 2>&1; then
+    log_message "rro-package=present"
+    if cmd overlay enable --user 0 "$RRO_PACKAGE" >/dev/null 2>&1; then
+      log_message "rro-enable-request=accepted"
+    else
+      # Static overlays can reject a manual enable request even when active.
+      log_message "rro-enable-request=rejected"
+    fi
+  else
+    log_message "rro-package=missing"
+  fi
+
+  RRO_VALUE=$(cmd overlay lookup --user 0 com.android.wifi.resources \
+    "$RRO_RESOURCE" 2>/dev/null | tr -d '\r\n')
+  case "$RRO_VALUE" in
+    false) log_message "rro-value=false" ;;
+    true) log_message "rro-value=true" ;;
+    *) log_message "rro-value=lookup-failed" ;;
+  esac
+}
+
 if [ ! -x "$PATCHER" ]; then
   log_message "phase=user status=patcher-not-executable"
   exit 1
@@ -147,6 +172,7 @@ while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$WAIT_COUNT" -lt 180 ]; d
 done
 sleep 10
 patch_user_store user-settled
+ensure_rro
 
 if [ -f "$MARKER_FILE" ]; then
   log_message "user-store-ever-patched=1"

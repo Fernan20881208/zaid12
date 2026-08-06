@@ -1,12 +1,13 @@
-POCO X6 Pro Wi-Fi WPA2 Compatibility 2.0
+POCO X6 Pro Wi-Fi WPA2 Compatibility 2.1
 
 Dispositivo: Xiaomi POCO X6 Pro / duchamp
 ROM objetivo: Evolution X oficial, Android 17
 
 QUE HACE
 - Mantiene el RRO que desactiva los recursos de auto-upgrade WPA2-SAE.
-- Antes del servicio Wi-Fi, corrige solo perfiles WPA2 deshabilitados por
-  NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD.
+- Detecta perfiles WPA2 con SAE marcado como agregado automaticamente, incluso
+  si Android no conserva NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD.
+- Elimina solo el bloque SAE automatico; conserva SAE elegido explicitamente.
 - Convierte localmente la frase WPA2 en su PMK hexadecimal estandar para que
   AOSP no agregue SAE/Cross-AKM a ese perfil.
 - Cubre tanto el almacen compartido como el almacen cifrado del usuario 0.
@@ -43,8 +44,9 @@ El log nunca debe contener credenciales.
 RRO:
 cmd overlay lookup --user 0 com.android.wifi.resources com.android.wifi.resources:bool/config_wifiSaeUpgradeEnabled
 
-El resultado debe ser false. El offload interno puede seguir mostrando true;
-la representacion PMK de v2 es la que evita que ese camino agregue SAE.
+El modulo intenta dejarlo en false y anota rro-value=false o rro-value=true.
+Aunque la ROM mantenga true, la PMK y la eliminacion del SAE automatico de v2.1
+evitan que ese camino vuelva a usar Cross-AKM para el perfil corregido.
 
 RESPALDO Y DESINSTALACION
 - La primera configuracion original queda, con permisos 0600, en:

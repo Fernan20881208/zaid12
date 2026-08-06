@@ -62,10 +62,10 @@ jobs:
       - name: Upload KernelSU module
         uses: actions/upload-artifact@v4
         with:
-          name: POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU
+          name: POCO-X6-Pro-WiFi-WPA2-Compat-v2.1-KSU
           path: |
-            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU.zip
-            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU.zip.sha256
+            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v2.1-KSU.zip
+            artifacts/POCO-X6-Pro-WiFi-WPA2-Compat-v2.1-KSU.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
