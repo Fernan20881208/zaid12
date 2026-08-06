@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<overlay xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        target="bool/config_wifiSaeUpgradeEnabled"
+        value="@bool/wifi_sae_upgrade_disabled" />
+    <item
+        target="bool/config_wifiSaeUpgradeOffloadEnabled"
+        value="@bool/wifi_sae_upgrade_disabled" />
+</overlay>
