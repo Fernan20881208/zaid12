@@ -650,17 +650,23 @@ static int read_file(const char *path, char **data, size_t *length) {
 
 static int write_file(const char *path, const char *data, size_t length) {
     FILE *file = fopen(path, "wb");
+    int failed = 0;
     if (file == NULL) {
         return -1;
     }
     if (length != 0U && fwrite(data, 1U, length, file) != length) {
-        fclose(file);
-        return -1;
+        failed = 1;
     }
-    if (fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0) {
-        return -1;
+    if (fflush(file) != 0) {
+        failed = 1;
     }
-    return 0;
+    if (fsync(fileno(file)) != 0) {
+        failed = 1;
+    }
+    if (fclose(file) != 0) {
+        failed = 1;
+    }
+    return failed ? -1 : 0;
 }
 
 static int self_test(void) {

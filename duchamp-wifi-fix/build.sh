@@ -132,6 +132,7 @@ mkdir -p "$MODULE_ROOT/system/product/overlay" "$MODULE_ROOT/bin"
 install -m 0644 "$PROJECT_DIR/module/module.prop" "$MODULE_ROOT/module.prop"
 install -m 0755 "$PROJECT_DIR/module/customize.sh" "$MODULE_ROOT/customize.sh"
 install -m 0755 "$PROJECT_DIR/module/post-fs-data.sh" "$MODULE_ROOT/post-fs-data.sh"
+install -m 0755 "$PROJECT_DIR/module/service.sh" "$MODULE_ROOT/service.sh"
 install -m 0755 "$ANDROID_PATCHER" "$MODULE_ROOT/bin/wifi_psk_compat"
 install -m 0644 "$PROJECT_DIR/module/README.txt" "$MODULE_ROOT/README.txt"
 install -m 0644 "$SIGNED_APK" "$MODULE_ROOT/system/product/overlay/DuchampWifiCompatOverlay.apk"
@@ -146,6 +147,7 @@ fi
     module.prop \
     customize.sh \
     post-fs-data.sh \
+    service.sh \
     README.txt \
     bin \
     system
@@ -156,6 +158,7 @@ for required_entry in \
   module.prop \
   customize.sh \
   post-fs-data.sh \
+  service.sh \
   README.txt \
   bin/wifi_psk_compat \
   system/product/overlay/DuchampWifiCompatOverlay.apk; do

@@ -15,4 +15,5 @@ fi
 
 set_perm_recursive "$MODPATH/system" 0 0 0755 0644
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
+set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/bin/wifi_psk_compat" 0 0 0755

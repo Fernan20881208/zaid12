@@ -25,6 +25,10 @@ el servicio Wi-Fi:
 3. Sustituye la frase entre comillas por su representación PMK de 64 dígitos
    hexadecimales y vuelve a habilitar el perfil.
 
+Se cubren los dos lugares usados por Android: el almacén compartido se corrige
+en `post-fs-data`; el almacén cifrado del usuario 0 se corrige al desbloquear y
+se comprueba otra vez cuando termina el arranque.
+
 AOSP omite la ampliación PSK/SAE cuando el `PreSharedKey` ya es un PMK hexadecimal
 de 64 dígitos. El módulo no cambia redes que estén funcionando ni perfiles que
 tengan otro motivo de desactivación.
@@ -60,7 +64,10 @@ La v2.0 reemplaza por completo a la v1.0; no deben instalarse como módulos sepa
    «contraseña incorrecta». **No la olvides antes del primer reinicio.**
 2. Instala el ZIP interior v2.0 desde KernelSU Next, encima de la v1 si existe.
 3. Reinicia Android.
-4. Activa Wi-Fi y prueba la red.
+4. Desbloquea el teléfono, espera unos 15 segundos y prueba la red.
+5. Si aún muestra «contraseña incorrecta», reinicia una segunda vez. Esto solo
+   es necesario cuando el perfil estaba en el almacén cifrado del usuario y el
+   servicio Wi-Fi alcanzó a leerlo antes de la primera corrección.
 
 Si la red no estaba guardada, introduce la contraseña una vez, deja que falle y
 reinicia. El módulo podrá corregir ese perfil durante el siguiente arranque.
@@ -72,9 +79,13 @@ su
 cat /data/adb/duchamp_wifi_wpa2_compat/patch.log
 ```
 
-En el primer arranque efectivo debe aparecer `patched=1` y `status=patched`.
+En el primer arranque efectivo debe aparecer `patched=1` y `status=patched`,
+posiblemente precedidos por `phase=user-early` o `phase=user-settled`.
 En arranques posteriores es normal ver `status=no-change`: la conversión es
 idempotente. El registro no contiene credenciales.
+
+Si aparece `user-store-ever-patched=1` y la red no conectó en ese mismo arranque,
+haz el segundo reinicio indicado arriba.
 
 El RRO también debe seguir activo:
 
@@ -91,6 +102,9 @@ El resultado esperado es `false`. Que `mIsWpa3SaeUpgradeOffloadEnabled` siga en
 Antes del primer cambio se guarda una copia con permisos `0600` en:
 
 `/data/adb/duchamp_wifi_wpa2_compat/WifiConfigStore.xml.before-pmk`
+
+Para el almacén cifrado del usuario, el nombre es
+`WifiConfigStore-user0.xml.before-pmk` en el mismo directorio.
 
 Ese archivo contiene la configuración Wi-Fi original y debe tratarse como
 secreto. No lo compartas ni lo adjuntes a issues.
