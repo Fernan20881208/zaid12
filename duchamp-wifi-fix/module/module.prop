@@ -1,0 +1,6 @@
+id=duchamp_wifi_wpa2_compat
+name=POCO X6 Pro Wi-Fi WPA2 Compatibility
+version=1.0
+versionCode=1
+author=OpenAI para Zaid
+description=RRO persistente para desactivar el auto-upgrade WPA2-SAE en Evolution X (duchamp). Reversible al desinstalar el modulo.
