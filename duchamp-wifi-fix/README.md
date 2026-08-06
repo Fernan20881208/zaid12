@@ -1,53 +1,102 @@
-# POCO X6 Pro Wi-Fi WPA2 Compatibility
+# POCO X6 Pro Wi-Fi WPA2 Compatibility v2
 
 Módulo para KernelSU Next dirigido al Xiaomi POCO X6 Pro (`duchamp`) con
-Evolution X y Android 16 (API 36).
+Evolution X oficial y Android 17.
 
-## Motivo
+## Diagnóstico confirmado
 
-El diagnóstico de la conexión mostró que la contraseña WPA2 era correcta y que
-el punto de acceso aceptaba la asociación, pero rechazaba la autenticación justo
-después del segundo mensaje EAPOL. La configuración de Evolution X añadía SAE y
-Cross-AKM al perfil WPA2, provocando una incompatibilidad con ese router.
+La contraseña WPA2 es correcta. En el registro de autenticación, Android crea
+un perfil PSK+SAE (`key_mgmt 0x542`) y añade RSNXE al mensaje EAPOL 2/4. El
+punto de acceso anuncia WPA2-PSK (`key_mgmt 0x2`) y corta la autenticación con
+el motivo 23. Android presenta ese rechazo como «contraseña incorrecta».
 
-## Cambio aplicado
+El RRO de la v1 sí cambia `config_wifiSaeUpgradeEnabled` a `false`, pero Android
+17 vuelve a activar el offload Cross-AKM mediante una bandera de solo lectura.
+Por eso el RRO solo no basta en esta compilación.
 
-El módulo instala un RRO estático para `com.android.wifi.resources` y establece:
+## Cambio aplicado por la v2
 
-- `config_wifiSaeUpgradeEnabled=false`
-- `config_wifiSaeUpgradeOffloadEnabled=false`
+El módulo conserva el RRO de la v1 y, en `post-fs-data`, antes de que arranque
+el servicio Wi-Fi:
 
-No contiene contraseñas, direcciones MAC, registros, configuraciones Wi-Fi ni
-los APK de sistema usados para el diagnóstico.
+1. Busca únicamente perfiles WPA2-PSK deshabilitados por
+   `NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD`.
+2. Deriva en el teléfono el PMK WPA2 estándar con PBKDF2-HMAC-SHA1.
+3. Sustituye la frase entre comillas por su representación PMK de 64 dígitos
+   hexadecimales y vuelve a habilitar el perfil.
+
+AOSP omite la ampliación PSK/SAE cuando el `PreSharedKey` ya es un PMK hexadecimal
+de 64 dígitos. El módulo no cambia redes que estén funcionando ni perfiles que
+tengan otro motivo de desactivación.
+
+El parcheador es un binario nativo arm64 autocontenido. No usa red, no imprime
+SSID, contraseña ni PMK, y GitHub Actions solo compila código y datos de prueba
+sintéticos. Ninguna configuración real del teléfono forma parte del repositorio
+o del artefacto.
+
+La condición usada está en el método
+[`addPskSaeUpgradableTypeFlagsIfSupported`](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/tags/android-17.0.0_r1/service/java/com/android/server/wifi/SupplicantStaNetworkHalAidlImpl.java)
+de AOSP Android 17: una clave de 64 caracteres hexadecimales no recibe los tipos
+SAE actualizables. La activación del offload puede verse en
+[`ClientModeImpl`](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/tags/android-17.0.0_r1/service/java/com/android/server/wifi/ClientModeImpl.java).
 
 ## Compilación en GitHub Actions
 
-El workflow **Build POCO X6 Pro Wi-Fi WPA2 fix** compila el overlay con Android
-API 36, lo alinea, lo firma, valida sus recursos y genera el módulo ZIP.
+El workflow **Build POCO X6 Pro Wi-Fi WPA2 fix**:
 
-1. Abre la pestaña **Actions** del repositorio.
-2. Entra al workflow y abre la ejecución más reciente que esté en verde.
-3. Descarga el artefacto `POCO-X6-Pro-WiFi-WPA2-Compat-v1.0-KSU`.
-4. Extrae el contenedor descargado y conserva el ZIP interior sin extraerlo.
-5. Instala ese ZIP interior desde KernelSU Next y reinicia.
-6. Olvida la red afectada y vuelve a agregarla.
+- ejecuta un vector criptográfico conocido;
+- prueba la conversión y su idempotencia con XML sintético;
+- compila el parcheador Android arm64 PIE con NDK r27c;
+- compila, firma y valida el RRO con Android API 36;
+- verifica el contenido del módulo y genera su SHA-256.
 
-## Comprobación
+El artefacto resultante se llama
+`POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU` y contiene el ZIP que se instala.
+
+## Instalación
+
+1. Si ya intentaste conectar, conserva la red guardada aunque aparezca como
+   «contraseña incorrecta». **No la olvides antes del primer reinicio.**
+2. Instala el ZIP interior v2.0 desde KernelSU Next, encima de la v1 si existe.
+3. Reinicia Android.
+4. Activa Wi-Fi y prueba la red.
+
+Si la red no estaba guardada, introduce la contraseña una vez, deja que falle y
+reinicia. El módulo podrá corregir ese perfil durante el siguiente arranque.
+
+## Comprobación segura
 
 ```sh
 su
+cat /data/adb/duchamp_wifi_wpa2_compat/patch.log
+```
+
+En el primer arranque efectivo debe aparecer `patched=1` y `status=patched`.
+En arranques posteriores es normal ver `status=no-change`: la conversión es
+idempotente. El registro no contiene credenciales.
+
+El RRO también debe seguir activo:
+
+```sh
 cmd overlay lookup --user 0 com.android.wifi.resources \
   com.android.wifi.resources:bool/config_wifiSaeUpgradeEnabled
 ```
 
-Debe devolver `false`. `mIsWpa3SaeUpgradeOffloadEnabled` puede seguir mostrando
-`true` debido a una bandera AOSP de solo lectura; el valor importante para este
-overlay es el resultado del comando anterior.
+El resultado esperado es `false`. Que `mIsWpa3SaeUpgradeOffloadEnabled` siga en
+`true` es precisamente la razón por la que v2 añade la representación PMK.
 
-## Revertir
+## Respaldo y reversión
 
-Elimina el módulo desde KernelSU Next y reinicia.
+Antes del primer cambio se guarda una copia con permisos `0600` en:
 
-La clave incluida es una clave de prueba pública usada únicamente para mantener
-estable la identidad del APK entre compilaciones. No protege datos ni concede
-privilegios por sí sola.
+`/data/adb/duchamp_wifi_wpa2_compat/WifiConfigStore.xml.before-pmk`
+
+Ese archivo contiene la configuración Wi-Fi original y debe tratarse como
+secreto. No lo compartas ni lo adjuntes a issues.
+
+Para revertir, elimina o deshabilita el módulo en KernelSU Next, reinicia y
+después olvida y vuelve a agregar las redes afectadas. No restaures manualmente
+un respaldo antiguo sobre una configuración Wi-Fi más nueva.
+
+La clave incluida en el repositorio es una clave de prueba pública usada solo
+para mantener estable la identidad del APK del overlay entre compilaciones.
