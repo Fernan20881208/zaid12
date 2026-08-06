@@ -52,6 +52,7 @@ El workflow **Build POCO X6 Pro Wi-Fi WPA2 fix**:
 
 El artefacto resultante se llama
 `POCO-X6-Pro-WiFi-WPA2-Compat-v2.0-KSU` y contiene el ZIP que se instala.
+La v2.0 reemplaza por completo a la v1.0; no deben instalarse como módulos separados.
 
 ## Instalación
 
