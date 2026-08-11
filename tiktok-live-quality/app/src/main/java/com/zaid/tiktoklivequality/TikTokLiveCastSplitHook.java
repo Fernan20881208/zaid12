@@ -209,7 +209,8 @@ public final class TikTokLiveCastSplitHook implements IXposedHookLoadPackage {
         }
 
         boolean firstScan = ENUMERATED_PATHS.add(path);
-        try (DexFile dexFile = new DexFile(path)) {
+        try {
+            DexFile dexFile = new DexFile(path);
             int scanned = 0;
             Enumeration<String> entries = dexFile.entries();
             while (entries.hasMoreElements()) {
