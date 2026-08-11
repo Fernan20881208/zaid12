@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TikTok LIVE Quality</string>
+    <string name="xposed_description">Forces TikTok LIVE screen capture toward 60 FPS, high bitrate and a 20:9 virtual display while preserving encoder fallbacks.</string>
+</resources>
