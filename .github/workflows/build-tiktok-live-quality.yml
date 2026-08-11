@@ -47,13 +47,13 @@ jobs:
       - name: Prepare artifact
         run: |
           mkdir -p out
-          cp tiktok-live-quality/app/build/outputs/apk/debug/app-debug.apk out/TikTok-LIVE-Quality-LSPosed-v1.1.0.apk
-          sha256sum out/TikTok-LIVE-Quality-LSPosed-v1.1.0.apk | tee out/SHA256SUMS.txt
+          cp tiktok-live-quality/app/build/outputs/apk/debug/app-debug.apk out/TikTok-LIVE-Quality-LSPosed-v1.2.0.apk
+          sha256sum out/TikTok-LIVE-Quality-LSPosed-v1.2.0.apk | tee out/SHA256SUMS.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TikTok-LIVE-Quality-LSPosed-v1.1.0
+          name: TikTok-LIVE-Quality-LSPosed-v1.2.0
           path: out/
           if-no-files-found: error
           retention-days: 30
