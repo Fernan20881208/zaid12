@@ -2,14 +2,19 @@ package com.zaid.tiktoklivequality;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.os.Bundle;
+import android.util.Log;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import dalvik.system.DexFile;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -36,10 +41,21 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
             "com.byted.cast.capture.encoder.VideoEncoder"
     )));
 
+    private static final Set<String> TARGET_SIMPLE_CLASSES = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+            "RTCScreenProfile",
+            "RTCEngineImpl",
+            "ByteMediaRecorder",
+            "VideoRecorderManager",
+            "ScreenRecorder",
+            "VideoEncoder"
+    )));
+
     private static final Set<Class<?>> INSTALLED = Collections.newSetFromMap(new ConcurrentHashMap<Class<?>, Boolean>());
     private static final Set<ClassLoader> PROBED_LOADERS = Collections.newSetFromMap(new ConcurrentHashMap<ClassLoader, Boolean>());
+    private static final Set<ClassLoader> ENUMERATED_LIVE_LOADERS = Collections.newSetFromMap(new ConcurrentHashMap<ClassLoader, Boolean>());
     private static final AtomicBoolean DISCOVERY_HOOKS_INSTALLED = new AtomicBoolean(false);
     private static final AtomicBoolean FRAMEWORK_HOOKS_INSTALLED = new AtomicBoolean(false);
+    private static final AtomicBoolean SCREEN_CAPTURE_ACTIVE = new AtomicBoolean(false);
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -51,15 +67,9 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
 
         installDynamicClassDiscoveryHooks();
         installFrameworkFallbackHooks(lpparam.classLoader);
-        probeLoader(lpparam.classLoader, "initial TikTok loader");
+        inspectLoader(lpparam.classLoader, "initial TikTok loader", false);
     }
 
-    /**
-     * TikTok's live_cast feature is delivered as a dynamic split / dex container.  The
-     * original v1.0 only observed java.lang.ClassLoader.loadClass(), which can miss
-     * classes resolved through Android's BaseDexClassLoader/DexFile path.  v1.1 watches
-     * all of those paths and probes newly-created dex class loaders as well.
-     */
     private static void installDynamicClassDiscoveryHooks() {
         if (!DISCOVERY_HOOKS_INSTALLED.compareAndSet(false, true)) {
             return;
@@ -81,6 +91,7 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
         hookLoaderConstructors("dalvik.system.DexClassLoader");
         hookLoaderConstructors("dalvik.system.InMemoryDexClassLoader");
         hookLoaderConstructors("dalvik.system.DelegateLastClassLoader");
+        hookDexPathMutations();
     }
 
     private static void hookClassResultMethods(String className, String methodName) {
@@ -105,12 +116,13 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
                     return;
                 }
                 Object result = param.getResult();
-                if (result instanceof Class<?>) {
-                    Class<?> clazz = (Class<?>) result;
-                    if (TARGET_CLASSES.contains(clazz.getName())) {
-                        log("Discovered target via " + source + ": " + clazz.getName() + " loader=" + describeLoader(clazz.getClassLoader()));
-                        installForClass(clazz);
-                    }
+                if (!(result instanceof Class<?>)) {
+                    return;
+                }
+                Class<?> clazz = (Class<?>) result;
+                if (isTargetClassName(clazz.getName())) {
+                    log("Discovered target via " + source + ": " + clazz.getName() + " loader=" + describeLoader(clazz.getClassLoader()));
+                    installForClass(clazz);
                 }
             }
         };
@@ -126,9 +138,7 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     if (param.thisObject instanceof ClassLoader) {
-                        ClassLoader loader = (ClassLoader) param.thisObject;
-                        log("Observed loader " + className + " -> " + describeLoader(loader));
-                        probeLoader(loader, className + " constructor");
+                        inspectLoader((ClassLoader) param.thisObject, className + " constructor", false);
                     }
                 }
             });
@@ -137,28 +147,181 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
         }
     }
 
-    private static void probeLoader(ClassLoader loader, String source) {
-        if (loader == null || !PROBED_LOADERS.add(loader)) {
+    /**
+     * Dynamic-feature frameworks can mutate an existing PathClassLoader instead of
+     * constructing a new one. v1.2 therefore re-inspects the loader whenever ART adds
+     * another dex path. This is the path used by many split APK loaders.
+     */
+    private static void hookDexPathMutations() {
+        try {
+            Class<?> baseDex = XposedHelpers.findClassIfExists("dalvik.system.BaseDexClassLoader", null);
+            if (baseDex == null) {
+                return;
+            }
+            XposedBridge.hookAllMethods(baseDex, "addDexPath", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.thisObject instanceof ClassLoader) {
+                        String added = param.args != null && param.args.length > 0 ? String.valueOf(param.args[0]) : "<unknown>";
+                        log("BaseDexClassLoader.addDexPath added=" + added);
+                        inspectLoader((ClassLoader) param.thisObject, "BaseDexClassLoader.addDexPath", true);
+                    }
+                }
+            });
+            log("Discovery hook installed: BaseDexClassLoader.addDexPath");
+        } catch (Throwable t) {
+            log("Discovery hook failed: BaseDexClassLoader.addDexPath: " + t);
+        }
+    }
+
+    private static void inspectLoader(ClassLoader loader, String source, boolean forceProbe) {
+        if (loader == null) {
             return;
         }
 
-        log("Probing loader from " + source + ": " + describeLoader(loader));
+        String dexPaths = describeDexPaths(loader);
+        boolean liveCast = containsLiveCast(dexPaths);
+
+        if (liveCast) {
+            log("LIVE_CAST loader via " + source + ": " + describeLoader(loader) + " dex=" + dexPaths);
+        } else if (PROBED_LOADERS.add(loader)) {
+            log("Observed loader via " + source + ": " + describeLoader(loader));
+        }
+
+        if (forceProbe || liveCast || PROBED_LOADERS.contains(loader)) {
+            probeTargetNames(loader, source);
+        }
+
+        if (liveCast && ENUMERATED_LIVE_LOADERS.add(loader)) {
+            enumerateLiveCastDex(loader, source);
+        }
+    }
+
+    private static void probeTargetNames(ClassLoader loader, String source) {
         for (String className : TARGET_CLASSES) {
             try {
                 Class<?> clazz = Class.forName(className, false, loader);
                 log("Probe found " + className + " via " + source);
                 installForClass(clazz);
             } catch (Throwable ignored) {
-                // Expected until the dynamic live_cast dex is attached to this loader.
+                // Expected while the dynamic feature is not attached yet.
             }
         }
     }
 
-    /**
-     * Framework-level fallback.  This guarantees that we can at least see and resize
-     * TikTok's WebRTC_ScreenCapture VirtualDisplay even if ByteDance changes its
-     * dynamic-feature class loader again.
-     */
+    private static void enumerateLiveCastDex(ClassLoader loader, String source) {
+        try {
+            Set<DexFile> dexFiles = getDexFiles(loader);
+            int scanned = 0;
+            int matched = 0;
+
+            for (DexFile dexFile : dexFiles) {
+                String dexName = safeDexName(dexFile);
+                if (!containsLiveCast(dexName)) {
+                    continue;
+                }
+
+                log("Enumerating live_cast dex=" + dexName + " via " + source);
+                Enumeration<String> entries = dexFile.entries();
+                while (entries.hasMoreElements()) {
+                    String className = entries.nextElement();
+                    scanned++;
+                    if (!isPotentialTargetSimpleName(className)) {
+                        continue;
+                    }
+                    matched++;
+                    log("live_cast target candidate=" + className);
+                    try {
+                        Class<?> clazz = Class.forName(className, false, loader);
+                        installForClass(clazz);
+                    } catch (Throwable t) {
+                        log("Failed loading candidate " + className + ": " + t);
+                    }
+                }
+            }
+
+            log("live_cast dex enumeration complete scanned=" + scanned + " matched=" + matched);
+        } catch (Throwable t) {
+            log("live_cast dex enumeration failed: " + t);
+        }
+    }
+
+    private static Set<DexFile> getDexFiles(ClassLoader loader) {
+        Set<DexFile> result = new LinkedHashSet<>();
+        try {
+            Object pathList = XposedHelpers.getObjectField(loader, "pathList");
+            Object elementsObject = XposedHelpers.getObjectField(pathList, "dexElements");
+            if (!(elementsObject instanceof Object[])) {
+                return result;
+            }
+
+            for (Object element : (Object[]) elementsObject) {
+                if (element == null) {
+                    continue;
+                }
+                try {
+                    Object dexFile = XposedHelpers.getObjectField(element, "dexFile");
+                    if (dexFile instanceof DexFile) {
+                        result.add((DexFile) dexFile);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return result;
+    }
+
+    private static String describeDexPaths(ClassLoader loader) {
+        StringBuilder out = new StringBuilder();
+        try {
+            for (DexFile dexFile : getDexFiles(loader)) {
+                if (out.length() > 0) {
+                    out.append('|');
+                }
+                out.append(safeDexName(dexFile));
+            }
+        } catch (Throwable ignored) {
+        }
+        return out.length() == 0 ? "<unknown>" : out.toString();
+    }
+
+    private static String safeDexName(DexFile dexFile) {
+        try {
+            String name = dexFile.getName();
+            return name == null ? String.valueOf(dexFile) : name;
+        } catch (Throwable t) {
+            return String.valueOf(dexFile);
+        }
+    }
+
+    private static boolean containsLiveCast(String value) {
+        if (value == null) {
+            return false;
+        }
+        String lower = value.toLowerCase();
+        return lower.contains("live_cast") || lower.contains("livecast") || lower.contains("df_live_cast");
+    }
+
+    private static boolean isPotentialTargetSimpleName(String className) {
+        if (className == null) {
+            return false;
+        }
+        int dot = className.lastIndexOf('.');
+        String simple = dot >= 0 ? className.substring(dot + 1) : className;
+        return TARGET_SIMPLE_CLASSES.contains(simple);
+    }
+
+    private static boolean isTargetClassName(String className) {
+        if (TARGET_CLASSES.contains(className)) {
+            return true;
+        }
+        if (className == null || !className.toLowerCase().contains("cast")) {
+            return false;
+        }
+        return isPotentialTargetSimpleName(className);
+    }
+
     private static void installFrameworkFallbackHooks(ClassLoader appLoader) {
         if (!FRAMEWORK_HOOKS_INSTALLED.compareAndSet(false, true)) {
             return;
@@ -185,26 +348,33 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
                     int[] target = chooseTarget(oldW, oldH);
                     int density = param.args[3] instanceof Integer ? (Integer) param.args[3] : -1;
 
+                    SCREEN_CAPTURE_ACTIVE.set(true);
                     log("MediaProjection.createVirtualDisplay " + name + ": " + oldW + "x" + oldH + " density=" + density
                             + " -> " + target[0] + "x" + target[1]);
                     param.args[1] = target[0];
                     param.args[2] = target[1];
                 }
             });
-            log("Framework fallback installed: MediaProjection.createVirtualDisplay");
+
+            XposedBridge.hookAllMethods(mediaProjection, "stop", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (SCREEN_CAPTURE_ACTIVE.getAndSet(false)) {
+                        log("MediaProjection.stop: screen capture inactive");
+                    }
+                }
+            });
+            log("Framework fallback installed: MediaProjection.createVirtualDisplay/stop");
         } catch (Throwable t) {
-            log("Framework fallback failed: MediaProjection.createVirtualDisplay: " + t);
+            log("Framework fallback failed: MediaProjection: " + t);
         }
 
-        // Diagnostic-only in v1.1: record the actual encoder MediaFormat without
-        // changing it.  Once the live_cast hooks are confirmed, this tells us whether
-        // the final MediaCodec config keeps 60fps/16Mbps or is adapted downstream.
         try {
             XposedBridge.hookAllMethods(MediaCodec.class, "configure", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (param.args == null || param.args.length < 4 || !(param.args[0] instanceof MediaFormat)
-                            || !(param.args[3] instanceof Integer)) {
+                    if (!SCREEN_CAPTURE_ACTIVE.get() || param.args == null || param.args.length < 4
+                            || !(param.args[0] instanceof MediaFormat) || !(param.args[3] instanceof Integer)) {
                         return;
                     }
                     int flags = (Integer) param.args[3];
@@ -214,15 +384,25 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
 
                     MediaFormat format = (MediaFormat) param.args[0];
                     String text = String.valueOf(format);
-                    if (!isVideoFormat(text) || !hasByteDanceCastFrame()) {
-                        return;
+                    if (isVideoFormat(text)) {
+                        log("MediaCodec.configure VIDEO ENCODER while screen capture active: " + text);
                     }
-                    log("MediaCodec.configure encoder format=" + text);
                 }
             });
-            log("Diagnostic hook installed: MediaCodec.configure");
+
+            XposedBridge.hookAllMethods(MediaCodec.class, "setParameters", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!SCREEN_CAPTURE_ACTIVE.get() || param.args == null || param.args.length == 0
+                            || !(param.args[0] instanceof Bundle)) {
+                        return;
+                    }
+                    log("MediaCodec.setParameters while screen capture active: " + param.args[0]);
+                }
+            });
+            log("Diagnostic hooks installed: MediaCodec.configure/setParameters");
         } catch (Throwable t) {
-            log("Diagnostic hook failed: MediaCodec.configure: " + t);
+            log("Diagnostic hook failed: MediaCodec: " + t);
         }
     }
 
@@ -230,9 +410,10 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
         if (name == null) {
             return false;
         }
+        String lower = name.toLowerCase();
         return SCREEN_CAPTURE_NAME.equals(name)
-                || name.toLowerCase().contains("webrtc_screencapture")
-                || name.toLowerCase().contains("screen_capture");
+                || lower.contains("webrtc_screencapture")
+                || lower.contains("screen_capture");
     }
 
     private static boolean isVideoFormat(String format) {
@@ -243,46 +424,34 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
         return lower.contains("video/") || lower.contains("mime=video");
     }
 
-    private static boolean hasByteDanceCastFrame() {
-        try {
-            for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
-                String name = element.getClassName();
-                if (name.startsWith("com.byted.cast.") || name.contains("ScreenRecorder") || name.contains("WebRTC")) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
-    }
-
     private static void installForClass(Class<?> clazz) {
-        if (clazz == null || !TARGET_CLASSES.contains(clazz.getName()) || !INSTALLED.add(clazz)) {
+        if (clazz == null || !isPotentialTargetSimpleName(clazz.getName()) || !INSTALLED.add(clazz)) {
             return;
         }
 
         try {
-            switch (clazz.getName()) {
-                case "com.byted.cast.sdk.RTCScreenProfile":
+            switch (clazz.getSimpleName()) {
+                case "RTCScreenProfile":
                     hookScreenProfile(clazz);
                     break;
-                case "com.byted.cast.sdk.core.RTCEngineImpl":
+                case "RTCEngineImpl":
                     hookRtcEngine(clazz);
                     break;
-                case "com.byted.cast.capture.ByteMediaRecorder":
+                case "ByteMediaRecorder":
                     hookByteMediaRecorder(clazz);
                     break;
-                case "com.byted.cast.capture.video.VideoRecorderManager":
+                case "VideoRecorderManager":
                     hookVideoRecorderManager(clazz);
                     break;
-                case "com.byted.cast.capture.video.screen.ScreenRecorder":
+                case "ScreenRecorder":
                     hookScreenRecorderLogging(clazz);
                     break;
-                case "com.byted.cast.capture.encoder.VideoEncoder":
+                case "VideoEncoder":
                     hookVideoEncoderLogging(clazz);
                     break;
                 default:
-                    break;
+                    INSTALLED.remove(clazz);
+                    return;
             }
             log("Hooked " + clazz.getName() + " loader=" + describeLoader(clazz.getClassLoader()));
         } catch (Throwable t) {
@@ -302,7 +471,6 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
         XposedBridge.hookAllMethods(clazz, "setResolution", forceResolutionArgs("RTCScreenProfile.setResolution"));
         XposedBridge.hookAllMethods(clazz, "setmFps", forceSingleInt(TARGET_FPS, "RTCScreenProfile.setmFps"));
         XposedBridge.hookAllMethods(clazz, "setBitrate", forceBitratePair("RTCScreenProfile.setBitrate"));
-
         XposedBridge.hookAllMethods(clazz, "setFixedResolution", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
@@ -325,7 +493,6 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
                 }
             }
         });
-
         XposedBridge.hookAllMethods(clazz, "setVirtualDisplayWH", forceResolutionArgs("RTCEngineImpl.setVirtualDisplayWH"));
     }
 
@@ -409,11 +576,9 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
                 int oldW = (Integer) param.args[0];
                 int oldH = (Integer) param.args[1];
                 int[] target = chooseTarget(oldW, oldH);
-
                 if (oldW != target[0] || oldH != target[1]) {
                     log(source + ": " + oldW + "x" + oldH + " -> " + target[0] + "x" + target[1]);
                 }
-
                 param.args[0] = target[0];
                 param.args[1] = target[1];
             }
@@ -469,6 +634,13 @@ public final class TikTokLiveQualityHook implements IXposedHookLoadPackage {
     }
 
     private static void log(String message) {
-        XposedBridge.log(TAG + ": " + message);
+        try {
+            XposedBridge.log(TAG + ": " + message);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Log.i(TAG, message);
+        } catch (Throwable ignored) {
+        }
     }
 }
