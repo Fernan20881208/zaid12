@@ -1,1 +1,1 @@
-02ece0178aac60566983a66f8cdd19be40f80a64782e16c55786f3cc16ec0cce  out/Zaid-Screen-Recorder-v1.0.0.apk
+3c60c6b03bb7ddb32d3c915ed9c5638c6f06750531c6b9bd1e990c8fe0c7f472  out/Zaid-Screen-Recorder-v1.0.0.apk
