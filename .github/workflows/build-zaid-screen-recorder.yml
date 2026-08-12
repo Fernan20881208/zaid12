@@ -29,18 +29,30 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build APK
+      - name: Build APK and capture log
         working-directory: zaid-screen-recorder
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
-      - name: Prepare artifact
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee ../zaid-screen-recorder-build.log
+          RC=${PIPESTATUS[0]}
+          echo "$RC" > ../zaid-screen-recorder-build.rc
+          exit 0
+      - name: Prepare artifact when build succeeds
         run: |
           mkdir -p out
-          cp zaid-screen-recorder/app/build/outputs/apk/debug/app-debug.apk out/Zaid-Screen-Recorder-v1.0.0.apk
-          sha256sum out/Zaid-Screen-Recorder-v1.0.0.apk | tee out/SHA256SUMS.txt
-      - name: Upload APK
+          if [ "$(cat zaid-screen-recorder-build.rc)" = "0" ]; then
+            cp zaid-screen-recorder/app/build/outputs/apk/debug/app-debug.apk out/Zaid-Screen-Recorder-v1.0.0.apk
+            sha256sum out/Zaid-Screen-Recorder-v1.0.0.apk | tee out/SHA256SUMS.txt
+          fi
+          cp zaid-screen-recorder-build.log out/BUILD-LOG.txt
+          cp zaid-screen-recorder-build.rc out/BUILD-RC.txt
+      - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
-          name: Zaid-Screen-Recorder-v1.0.0
+          name: Zaid-Screen-Recorder-v1.0.0-build
           path: out/
           if-no-files-found: error
           retention-days: 30
+      - name: Fail if Gradle failed
+        run: test "$(cat zaid-screen-recorder-build.rc)" = "0"
