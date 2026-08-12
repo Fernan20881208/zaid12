@@ -2,8 +2,9 @@ package com.zaid.screenrecorder;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Context;
-import android.content.DialogInterface;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -19,7 +20,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -31,22 +31,20 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * HyperOS/AOSP compatibility hook for the MediaProjection consent activity.
+ * ClassLoader-independent replacement for the SystemUI MediaProjection consent dialog.
  *
- * HyperOS branches can carry either the older AOSP package
- * com.android.systemui.media.MediaProjectionPermissionActivity or the newer
- * com.android.systemui.mediaprojection.permission.MediaProjectionPermissionActivity.
- * This hook supports both and logs the actual activity class seen at runtime.
+ * HyperOS can instantiate MediaProjectionPermissionActivity from a loader that is not the
+ * package loader handed to a legacy Xposed entry point. Hooking the Activity class directly is
+ * therefore unreliable. Dialog.show() is a framework method shared by every SystemUI loader, so
+ * this hook identifies the permission Activity from the dialog context at the last safe moment,
+ * suppresses the stock dialog, and shows our own consent UI while leaving the real SystemUI
+ * Activity responsible for creating and returning the MediaProjection token.
  */
 public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
     private static final String TAG = "ZaidScreenRecorder";
     private static final int ENTIRE_SCREEN = 1;
-
-    private static final String[] ACTIVITY_CANDIDATES = {
-            "com.android.systemui.mediaprojection.permission.MediaProjectionPermissionActivity",
-            "com.android.systemui.media.MediaProjectionPermissionActivity",
-            "com.android.systemui.screenrecord.MediaProjectionPermissionActivity"
-    };
+    private static final String PERMISSION_ACTIVITY =
+            "com.android.systemui.mediaprojection.permission.MediaProjectionPermissionActivity";
 
     private static final Set<String> CLIENTS = new HashSet<>(Arrays.asList(
             "com.zhiliaoapp.musically",
@@ -57,75 +55,80 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
             "com.miui.screenrecorder"
     ));
 
+    private static final ThreadLocal<Boolean> SHOWING_REPLACEMENT = new ThreadLocal<>();
+    private static volatile boolean installed;
+
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        log("v1.2 SystemUI projection-dialog compatibility hook active process=" + lpparam.processName);
-
-        int found = 0;
-        for (String candidate : ACTIVITY_CANDIDATES) {
-            Class<?> cls = XposedHelpers.findClassIfExists(candidate, lpparam.classLoader);
-            if (cls == null) {
-                log("v1.2 permission activity NOT found: " + candidate);
-                continue;
+        synchronized (SystemUiProjectionDialogHook.class) {
+            if (installed) {
+                log("v1.2 framework consent hook already installed");
+                return;
             }
-            found++;
-            log("v1.2 permission activity FOUND: " + candidate);
-            hookPermissionActivity(cls, candidate);
+            installed = true;
         }
 
+        installFrameworkDialogInterceptor();
         installActivityDiscoveryLogger();
-        log("v1.2 permission activity candidates found=" + found);
+        log("v1.2 classloader-independent SystemUI consent hook active process=" + lpparam.processName);
     }
 
-    private void hookPermissionActivity(Class<?> activityClass, String className) {
+    private void installFrameworkDialogInterceptor() {
         try {
-            Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllMethods(
-                    activityClass,
-                    "setUpDialog",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!(param.thisObject instanceof Activity)) return;
-                            Activity activity = (Activity) param.thisObject;
-                            String hostPackage = resolveHostPackage(activity);
+            XposedBridge.hookAllMethods(Dialog.class, "show", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (Boolean.TRUE.equals(SHOWING_REPLACEMENT.get())) return;
+                    if (!(param.thisObject instanceof Dialog)) return;
 
-                            log("v1.2 setUpDialog hit class=" + className + " host=" + hostPackage
-                                    + " method=" + param.method);
+                    Dialog stock = (Dialog) param.thisObject;
+                    Activity activity = resolveActivity(stock);
+                    if (activity == null) return;
 
-                            if (hostPackage == null || !CLIENTS.contains(hostPackage)) return;
+                    String activityName = activity.getClass().getName();
+                    if (!PERMISSION_ACTIVITY.equals(activityName)) return;
 
-                            int dialogArg = findDialogArg(param.args);
-                            if (dialogArg < 0) {
-                                log("v1.2 setUpDialog has no AlertDialog argument; cannot replace safely");
-                                return;
-                            }
+                    String hostPackage = resolveHostPackage(activity);
+                    log("v1.2 MediaProjection Dialog.show hit activity=" + activityName
+                            + " host=" + hostPackage
+                            + " activityLoader=" + activity.getClass().getClassLoader());
 
-                            AlertDialog replacement = buildDialog(activity, hostPackage);
+                    if (hostPackage == null || !CLIENTS.contains(hostPackage)) {
+                        log("v1.2 stock consent left untouched because host is unsupported/unresolved");
+                        return;
+                    }
 
-                            try {
-                                XposedHelpers.setObjectField(activity, "mDialog", replacement);
-                            } catch (Throwable t) {
-                                log("v1.2 mDialog field update skipped: " + t);
-                            }
+                    AlertDialog replacement = buildDialog(activity, hostPackage);
+                    try {
+                        XposedHelpers.setObjectField(activity, "mDialog", replacement);
+                    } catch (Throwable t) {
+                        log("v1.2 mDialog field replacement skipped: " + t);
+                    }
 
-                            param.args[dialogArg] = replacement;
-                            log("v1.2 CUSTOM DIALOG INSTALLED host=" + hostPackage
-                                    + " activity=" + className);
-                        }
-                    });
+                    try {
+                        SHOWING_REPLACEMENT.set(Boolean.TRUE);
+                        replacement.show();
+                        log("v1.2 CUSTOM CONSENT SHOWN host=" + hostPackage);
+                    } catch (Throwable t) {
+                        log("v1.2 custom consent show failed " + t);
+                        return;
+                    } finally {
+                        SHOWING_REPLACEMENT.remove();
+                    }
 
-            log("v1.2 hooked " + hooks.size() + " setUpDialog method(s) on " + className);
+                    // Prevent the original HyperOS/AOSP permission sheet from ever becoming visible.
+                    param.setResult(null);
+                    log("v1.2 STOCK CONSENT SUPPRESSED host=" + hostPackage);
+                }
+            });
+            log("v1.2 framework Dialog.show interceptor installed");
         } catch (Throwable t) {
-            log("v1.2 setUpDialog hook failed class=" + className + " error=" + t);
+            log("v1.2 framework Dialog.show interceptor failed " + t);
         }
     }
 
-    /**
-     * Diagnostic fallback. If Xiaomi renamed the class, this reveals the actual Activity name
-     * as soon as its onCreate reaches Activity.onCreate().
-     */
     private void installActivityDiscoveryLogger() {
         try {
             XposedBridge.hookAllMethods(Activity.class, "onCreate", new XC_MethodHook() {
@@ -134,27 +137,42 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
                     if (!(param.thisObject instanceof Activity)) return;
                     Activity activity = (Activity) param.thisObject;
                     String name = activity.getClass().getName();
-                    String low = name.toLowerCase();
-                    if (low.contains("projection") || low.contains("capture")
-                            || low.contains("screenshare") || low.contains("screen_share")) {
-                        log("v1.2 ACTIVITY DISCOVERY class=" + name
-                                + " calling=" + activity.getCallingPackage()
-                                + " host=" + resolveHostPackage(activity));
-                    }
+                    if (!PERMISSION_ACTIVITY.equals(name)) return;
+                    log("v1.2 ACTIVITY DISCOVERY class=" + name
+                            + " calling=" + activity.getCallingPackage()
+                            + " host=" + resolveHostPackage(activity)
+                            + " loader=" + activity.getClass().getClassLoader());
                 }
             });
-            log("v1.2 Activity discovery logger installed");
+            log("v1.2 MediaProjection Activity discovery logger installed");
         } catch (Throwable t) {
             log("v1.2 Activity discovery logger failed " + t);
         }
     }
 
-    private int findDialogArg(Object[] args) {
-        if (args == null) return -1;
-        for (int i = 0; i < args.length; i++) {
-            if (args[i] instanceof AlertDialog) return i;
+    private Activity resolveActivity(Dialog dialog) {
+        try {
+            Activity owner = dialog.getOwnerActivity();
+            if (owner != null) return owner;
+        } catch (Throwable ignored) {
         }
-        return -1;
+
+        Context context;
+        try {
+            context = dialog.getContext();
+        } catch (Throwable t) {
+            return null;
+        }
+
+        int depth = 0;
+        while (context != null && depth++ < 12) {
+            if (context instanceof Activity) return (Activity) context;
+            if (!(context instanceof ContextWrapper)) break;
+            Context next = ((ContextWrapper) context).getBaseContext();
+            if (next == context) break;
+            context = next;
+        }
+        return null;
     }
 
     private String resolveHostPackage(Activity activity) {
@@ -165,16 +183,20 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
         for (String field : fieldNames) {
             try {
                 Object value = XposedHelpers.getObjectField(activity, field);
-                if (value instanceof String && !((String) value).isEmpty()) {
-                    return (String) value;
-                }
+                if (value instanceof String && CLIENTS.contains(value)) return (String) value;
             } catch (Throwable ignored) {
             }
         }
 
         try {
             String calling = activity.getCallingPackage();
-            if (calling != null && !calling.isEmpty()) return calling;
+            if (calling != null && CLIENTS.contains(calling)) return calling;
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            Object launched = XposedHelpers.callMethod(activity, "getLaunchedFromPackage");
+            if (launched instanceof String && CLIENTS.contains(launched)) return (String) launched;
         } catch (Throwable ignored) {
         }
 
@@ -184,9 +206,7 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
             if (extras != null) {
                 for (String key : extras.keySet()) {
                     Object value = extras.get(key);
-                    if (value instanceof String && CLIENTS.contains(value)) {
-                        return (String) value;
-                    }
+                    if (value instanceof String && CLIENTS.contains(value)) return (String) value;
                 }
             }
         } catch (Throwable ignored) {
@@ -246,27 +266,26 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
         card.addView(warning, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        final AlertDialog[] holder = new AlertDialog[1];
         AlertDialog dialog = new AlertDialog.Builder(
                 activity, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
                 .setView(card)
                 .setNegativeButton("Cancelar", (d, which) -> cancel(activity))
-                .setPositiveButton("Compartir pantalla", (d, which) -> {
-                    AlertDialog current = holder[0];
-                    grantEntireScreen(activity, current == null ? d : current, hostPackage);
-                })
+                .setPositiveButton("Compartir pantalla", (d, which) ->
+                        grantEntireScreen(activity, hostPackage))
                 .create();
-        holder[0] = dialog;
 
+        dialog.setOwnerActivity(activity);
         dialog.setCancelable(true);
         dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnCancelListener(d -> cancel(activity));
         dialog.setOnShowListener(d -> {
             try {
                 Window window = dialog.getWindow();
                 if (window != null) {
                     window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
                     window.setGravity(Gravity.BOTTOM);
-                    window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
                 }
                 if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(42, 126, 244));
@@ -277,40 +296,35 @@ public class SystemUiProjectionDialogHook implements IXposedHookLoadPackage {
                     dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFilterTouchesWhenObscured(true);
                 }
             } catch (Throwable t) {
-                log("v1.2 custom dialog styling failed " + t);
+                log("v1.2 custom consent styling failed " + t);
             }
         });
-
         return dialog;
     }
 
-    private void grantEntireScreen(Activity activity, DialogInterface dialog, String hostPackage) {
-        // Older AOSP/MIUI branches implement DialogInterface.OnClickListener and already map
-        // positive-button clicks to ENTIRE_SCREEN. Prefer that original path when available.
-        try {
-            XposedHelpers.callMethod(activity, "onClick", dialog, AlertDialog.BUTTON_POSITIVE);
-            log("v1.2 custom consent accepted through original onClick host=" + hostPackage);
-            return;
-        } catch (Throwable t) {
-            log("v1.2 original onClick grant path unavailable: " + t);
-        }
-
-        // Fallback for branches where grantMediaProjectionPermission(int) remains private.
+    private void grantEntireScreen(Activity activity, String hostPackage) {
         try {
             XposedHelpers.callMethod(activity, "grantMediaProjectionPermission", ENTIRE_SCREEN);
-            log("v1.2 custom consent accepted through grantMediaProjectionPermission(int) host=" + hostPackage);
+            log("v1.2 custom consent accepted via grantMediaProjectionPermission(int) host=" + hostPackage);
             return;
         } catch (Throwable t) {
-            log("v1.2 one-arg grant path unavailable: " + t);
+            log("v1.2 one-arg grant unavailable " + t);
         }
 
-        // Newer AOSP branches may carry a second casting-capabilities boolean.
         try {
             XposedHelpers.callMethod(activity, "grantMediaProjectionPermission", ENTIRE_SCREEN, false);
-            log("v1.2 custom consent accepted through grantMediaProjectionPermission(int,boolean) host=" + hostPackage);
+            log("v1.2 custom consent accepted via grantMediaProjectionPermission(int,boolean) host=" + hostPackage);
             return;
         } catch (Throwable t) {
-            log("v1.2 two-arg grant path failed: " + t);
+            log("v1.2 two-arg grant unavailable " + t);
+        }
+
+        try {
+            XposedHelpers.callMethod(activity, "onClick", null, AlertDialog.BUTTON_POSITIVE);
+            log("v1.2 custom consent accepted via original onClick host=" + hostPackage);
+            return;
+        } catch (Throwable t) {
+            log("v1.2 all grant paths failed " + t);
         }
 
         cancel(activity);
