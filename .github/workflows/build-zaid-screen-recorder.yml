@@ -58,8 +58,8 @@ jobs:
           mkdir -p out
           RC="$(cat zaid-screen-recorder-build.rc 2>/dev/null || echo 1)"
           if [ "$RC" = "0" ]; then
-            cp zaid-screen-recorder/app/build/outputs/apk/debug/app-debug.apk out/Zaid-Screen-Recorder-v1.4.0.apk
-            sha256sum out/Zaid-Screen-Recorder-v1.4.0.apk | tee out/SHA256SUMS.txt
+            cp zaid-screen-recorder/app/build/outputs/apk/debug/app-debug.apk out/Zaid-Screen-Recorder-v1.5.0.apk
+            sha256sum out/Zaid-Screen-Recorder-v1.5.0.apk | tee out/SHA256SUMS.txt
           fi
           [ -f zaid-screen-recorder-build.log ] && cp zaid-screen-recorder-build.log out/BUILD-LOG.txt || echo 'Build step did not start' > out/BUILD-LOG.txt
           echo "$RC" > out/BUILD-RC.txt
@@ -67,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Zaid-Screen-Recorder-v1.4.0-build
+          name: Zaid-Screen-Recorder-v1.5.0-build
           path: out/
           if-no-files-found: error
           retention-days: 30
