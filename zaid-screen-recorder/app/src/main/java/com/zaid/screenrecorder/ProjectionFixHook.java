@@ -25,6 +25,8 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
     private static final Set<String> TARGETS = new HashSet<>(Arrays.asList(
             "com.zhiliaoapp.musically",
             "com.xiaomi.mirror",
+            "com.google.android.apps.chromecast.app",
+            "com.miui.mishare.connectivity",
             "com.gxdevs.screenx",
             "com.miui.screenrecorder",
             "com.android.systemui"
@@ -107,6 +109,9 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                     int fixedW = width;
                     int fixedH = height;
 
+                    // TikTok has its own cast/RTC encoder pipeline and may intentionally use a
+                    // scaled VirtualDisplay (e.g. 1920x864). We only force its consent mode to
+                    // default-display and leave its encoder dimensions untouched here.
                     if (real[0] > 0 && real[1] > 0 && !"com.zhiliaoapp.musically".equals(pkg)) {
                         if (width * 2 == real[0] && height == real[1]) fixedW = real[0];
                         if (height * 2 == real[1] && width == real[0]) fixedH = real[1];
