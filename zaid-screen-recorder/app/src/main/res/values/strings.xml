@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zaid Screen Recorder</string>
+    <string name="app_description">Grabador root AOSP y corrección de MediaProjection para HyperOS 3.</string>
+</resources>

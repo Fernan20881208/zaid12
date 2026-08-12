@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:description="@string/app_description"
+        android:icon="@drawable/ic_screen_record"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".RecorderTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_screen_record"
+            android:label="Grabación de pantalla"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+        </service>
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="Corrige MediaProjection de pantalla completa y reemplaza la experiencia de grabación de HyperOS." />
+        <meta-data android:name="xposedminversion" android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:value="com.zhiliaoapp.musically;com.xiaomi.mirror;com.android.systemui;com.gxdevs.screenx;com.miui.screenrecorder" />
+    </application>
+</manifest>
