@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -26,7 +26,7 @@ jobs:
       - name: Install Android SDK 35
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.9'
       - name: Build APK and capture log
@@ -42,7 +42,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ "$(cat zaid-screen-recorder-build.rc 2>/dev/null || echo 1)" != "0" ]; then
+          RC="$(cat zaid-screen-recorder-build.rc 2>/dev/null || echo 1)"
+          if [ "$RC" != "0" ] && [ -f zaid-screen-recorder-build.log ]; then
             grep -Ei 'error:|cannot find symbol|FAILURE:|Execution failed|What went wrong|Could not resolve|AAPT:|Manifest merger failed|resource .* not found' zaid-screen-recorder-build.log | tail -40 | while IFS= read -r line; do
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
@@ -50,16 +51,18 @@ jobs:
               echo "::error title=Gradle build error::$line"
             done
           fi
-      - name: Prepare artifact when build succeeds
+      - name: Prepare artifact
         if: always()
+        shell: bash
         run: |
           mkdir -p out
-          if [ "$(cat zaid-screen-recorder-build.rc)" = "0" ]; then
+          RC="$(cat zaid-screen-recorder-build.rc 2>/dev/null || echo 1)"
+          if [ "$RC" = "0" ]; then
             cp zaid-screen-recorder/app/build/outputs/apk/debug/app-debug.apk out/Zaid-Screen-Recorder-v1.4.0.apk
             sha256sum out/Zaid-Screen-Recorder-v1.4.0.apk | tee out/SHA256SUMS.txt
           fi
-          cp zaid-screen-recorder-build.log out/BUILD-LOG.txt
-          cp zaid-screen-recorder-build.rc out/BUILD-RC.txt
+          [ -f zaid-screen-recorder-build.log ] && cp zaid-screen-recorder-build.log out/BUILD-LOG.txt || echo 'Build step did not start' > out/BUILD-LOG.txt
+          echo "$RC" > out/BUILD-RC.txt
       - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,4 +72,4 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Fail if Gradle failed
-        run: test "$(cat zaid-screen-recorder-build.rc)" = "0"
+        run: test "$(cat zaid-screen-recorder-build.rc 2>/dev/null || echo 1)" = "0"
