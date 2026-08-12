@@ -8,7 +8,7 @@ on:
       - '.github/workflows/build-zaid-screen-recorder.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -68,5 +68,22 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 30
+      - name: Publish APK temporarily to branch
+        if: ${{ github.ref == 'refs/heads/agent/zaid-screen-recorder' }}
+        shell: bash
+        run: |
+          test "$(cat zaid-screen-recorder-build.rc)" = "0"
+          mkdir -p build-artifacts
+          cp out/Zaid-Screen-Recorder-v1.0.0.apk build-artifacts/Zaid-Screen-Recorder-v1.0.0.apk
+          cp out/SHA256SUMS.txt build-artifacts/Zaid-Screen-Recorder-v1.0.0.sha256.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build-artifacts/Zaid-Screen-Recorder-v1.0.0.apk build-artifacts/Zaid-Screen-Recorder-v1.0.0.sha256.txt
+          if git diff --cached --quiet; then
+            echo "Published APK unchanged"
+          else
+            git commit -m "build: publish Zaid Screen Recorder v1.0.0 APK"
+            git push
+          fi
       - name: Fail if Gradle failed
         run: test "$(cat zaid-screen-recorder-build.rc)" = "0"
