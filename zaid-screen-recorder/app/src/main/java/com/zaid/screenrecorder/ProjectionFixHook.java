@@ -1,12 +1,27 @@
 package com.zaid.screenrecorder;
 
+import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.os.Bundle;
 import android.util.DisplayMetrics;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -21,15 +36,21 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class ProjectionFixHook implements IXposedHookLoadPackage {
     private static final String TAG = "ZaidScreenRecorder";
-    private static final Set<String> TARGETS = new HashSet<>(Arrays.asList(
+    private static final int ENTIRE_SCREEN = 1;
+
+    private static final Set<String> PROJECTION_CLIENTS = new HashSet<>(Arrays.asList(
             "com.zhiliaoapp.musically",
             "com.xiaomi.mirror",
             "com.google.android.apps.chromecast.app",
             "com.miui.mishare.connectivity",
             "com.gxdevs.screenx",
-            "com.miui.screenrecorder",
-            "com.android.systemui"
+            "com.miui.screenrecorder"
     ));
+
+    private static final Set<String> TARGETS = new HashSet<>(PROJECTION_CLIENTS);
+    static {
+        TARGETS.add("com.android.systemui");
+    }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -41,6 +62,7 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
 
         if ("com.android.systemui".equals(lpparam.packageName)) {
             installSystemUiRedirect();
+            installSystemPermissionDialogReplacement(lpparam.classLoader);
         }
     }
 
@@ -131,6 +153,176 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log(pkg + ": VirtualDisplay hook install failed " + t);
         }
+    }
+
+    /**
+     * Replaces the stock SystemUI MediaProjection permission sheet for the supported clients.
+     * The original SystemUI Activity remains responsible for consent, projection creation and
+     * returning the IMediaProjection token to the calling app. We only replace the UI that is
+     * passed into setUpDialog(), so there is no stock-dialog flash.
+     */
+    private void installSystemPermissionDialogReplacement(ClassLoader classLoader) {
+        try {
+            Class<?> activityClass = XposedHelpers.findClass(
+                    "com.android.systemui.mediaprojection.permission.MediaProjectionPermissionActivity",
+                    classLoader);
+
+            XposedHelpers.findAndHookMethod(activityClass, "setUpDialog", AlertDialog.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (!(param.thisObject instanceof Activity)) return;
+                            Activity activity = (Activity) param.thisObject;
+
+                            String hostPackage = null;
+                            try {
+                                Object field = XposedHelpers.getObjectField(activity, "mPackageName");
+                                if (field instanceof String) hostPackage = (String) field;
+                            } catch (Throwable ignored) {
+                            }
+
+                            if (hostPackage == null || !PROJECTION_CLIENTS.contains(hostPackage)) return;
+
+                            AlertDialog replacement = buildProjectionConsentDialog(activity, hostPackage);
+                            XposedHelpers.setObjectField(activity, "mDialog", replacement);
+                            param.args[0] = replacement;
+                            log("SystemUI MediaProjection dialog replaced for " + hostPackage);
+                        }
+                    });
+
+            log("SystemUI MediaProjection permission-dialog replacement installed");
+        } catch (Throwable t) {
+            log("SystemUI MediaProjection permission-dialog replacement failed " + t);
+        }
+    }
+
+    private AlertDialog buildProjectionConsentDialog(Activity activity, String hostPackage) {
+        String appName = appLabel(activity, hostPackage);
+
+        LinearLayout card = new LinearLayout(activity);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(activity, 26), dp(activity, 24), dp(activity, 26), dp(activity, 16));
+        card.setBackground(roundRect(Color.WHITE, dp(activity, 30)));
+
+        ImageView icon = new ImageView(activity);
+        try {
+            Drawable appIcon = activity.getPackageManager().getApplicationIcon(hostPackage);
+            icon.setImageDrawable(appIcon);
+        } catch (Throwable ignored) {
+            icon.setImageResource(android.R.drawable.ic_menu_camera);
+        }
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(activity, 54), dp(activity, 54));
+        iconLp.gravity = Gravity.CENTER_HORIZONTAL;
+        iconLp.bottomMargin = dp(activity, 16);
+        card.addView(icon, iconLp);
+
+        TextView brand = text(activity, "Zaid Screen Share", 13, Color.rgb(95, 95, 105));
+        brand.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams brandLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        brandLp.bottomMargin = dp(activity, 6);
+        card.addView(brand, brandLp);
+
+        TextView title = text(activity, "Compartir pantalla con " + appName, 24, Color.rgb(18, 18, 20));
+        title.setGravity(Gravity.CENTER);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        titleLp.bottomMargin = dp(activity, 12);
+        card.addView(title, titleLp);
+
+        TextView mode = text(activity, "Pantalla completa  •  sin recorte", 14, Color.rgb(38, 111, 235));
+        mode.setGravity(Gravity.CENTER);
+        mode.setPadding(dp(activity, 14), dp(activity, 9), dp(activity, 14), dp(activity, 9));
+        mode.setBackground(roundRect(Color.rgb(235, 243, 255), dp(activity, 18)));
+        LinearLayout.LayoutParams modeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        modeLp.gravity = Gravity.CENTER_HORIZONTAL;
+        modeLp.bottomMargin = dp(activity, 18);
+        card.addView(mode, modeLp);
+
+        TextView warning = text(activity,
+                "Todo lo que aparezca en tu pantalla será visible en " + appName
+                        + ". Oculta contraseñas, mensajes, fotos o información privada antes de continuar.",
+                14, Color.rgb(90, 90, 98));
+        warning.setGravity(Gravity.CENTER);
+        warning.setLineSpacing(0f, 1.12f);
+        card.addView(warning, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(
+                activity, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
+                .setView(card)
+                .setNegativeButton("Cancelar", (d, which) -> {
+                    activity.setResult(Activity.RESULT_CANCELED);
+                    activity.finish();
+                })
+                .setPositiveButton("Compartir pantalla", (d, which) -> {
+                    try {
+                        XposedHelpers.callMethod(activity, "grantMediaProjectionPermission", ENTIRE_SCREEN);
+                        log("custom consent accepted host=" + hostPackage + " mode=ENTIRE_SCREEN");
+                    } catch (Throwable t) {
+                        log("custom consent grant failed host=" + hostPackage + " error=" + t);
+                        activity.setResult(Activity.RESULT_CANCELED);
+                        activity.finish();
+                    }
+                })
+                .create();
+
+        dialog.setCancelable(true);
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnShowListener(d -> {
+            try {
+                Window window = dialog.getWindow();
+                if (window != null) {
+                    window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                    window.setGravity(Gravity.BOTTOM);
+                    window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                }
+                if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(42, 126, 244));
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setFilterTouchesWhenObscured(true);
+                }
+                if (dialog.getButton(AlertDialog.BUTTON_NEGATIVE) != null) {
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(70, 70, 76));
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFilterTouchesWhenObscured(true);
+                }
+            } catch (Throwable t) {
+                log("custom consent styling failed " + t);
+            }
+        });
+
+        return dialog;
+    }
+
+    private String appLabel(Context context, String packageName) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
+            CharSequence label = info.loadLabel(pm);
+            if (label != null && label.length() > 0) return label.toString();
+        } catch (Throwable ignored) {
+        }
+        return packageName;
+    }
+
+    private TextView text(Context context, String value, int sp, int color) {
+        TextView view = new TextView(context);
+        view.setText(value);
+        view.setTextSize(sp);
+        view.setTextColor(color);
+        return view;
+    }
+
+    private GradientDrawable roundRect(int color, int radiusPx) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radiusPx);
+        return drawable;
+    }
+
+    private int dp(Context context, int value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
     }
 
     private void installSystemUiRedirect() {
