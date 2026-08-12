@@ -92,10 +92,10 @@ public class MainActivity extends Activity {
         projection.setPadding(0, dp(26), 0, dp(8));
         root.addView(projection);
 
-        TextView projectionInfo = text("Al habilitar este APK como módulo LSPosed, TikTok LIVE y Xiaomi Mirror conservan el permiso oficial de Android, pero las solicitudes se fuerzan a captura de pantalla completa. También corrige VirtualDisplay si detecta exactamente media dimensión.", 14, Color.rgb(190,190,200));
+        TextView projectionInfo = text("Al habilitar este APK como módulo LSPosed, TikTok LIVE, Xiaomi Mirror, Google Home/Chromecast y Mi Share conservan el permiso oficial de Android, pero las solicitudes se fuerzan a captura de pantalla completa. También corrige VirtualDisplay si detecta exactamente media dimensión.", 14, Color.rgb(190,190,200));
         root.addView(projectionInfo);
 
-        TextView scope = text("Ámbito recomendado LSPosed:\n• TikTok\n• Xiaomi Mirror\n• SystemUI\n• ScreenX\n• MIUI Screen Recorder", 13, Color.rgb(135,205,255));
+        TextView scope = text("Ámbito recomendado LSPosed:\n• TikTok\n• Xiaomi Mirror\n• Google Home / Chromecast\n• Mi Share\n• SystemUI\n• ScreenX\n• MIUI Screen Recorder", 13, Color.rgb(135,205,255));
         scope.setPadding(0, dp(12), 0, 0);
         root.addView(scope);
 
