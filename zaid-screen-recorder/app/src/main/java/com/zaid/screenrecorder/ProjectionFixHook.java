@@ -13,7 +13,6 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-import de.robv.android.xposed.AndroidAppHelper;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -41,7 +40,7 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
         installVirtualDisplayGuard(lpparam.packageName);
 
         if ("com.android.systemui".equals(lpparam.packageName)) {
-            installSystemUiRedirect(lpparam.classLoader);
+            installSystemUiRedirect();
         }
     }
 
@@ -110,8 +109,8 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                     int fixedH = height;
 
                     // TikTok has its own cast/RTC encoder pipeline and may intentionally use a
-                    // scaled VirtualDisplay (e.g. 1920x864). We only force its consent mode to
-                    // default-display and leave its encoder dimensions untouched here.
+                    // scaled VirtualDisplay. Force its consent mode to default-display, but do
+                    // not rewrite its encoder dimensions here.
                     if (real[0] > 0 && real[1] > 0 && !"com.zhiliaoapp.musically".equals(pkg)) {
                         if (width * 2 == real[0] && height == real[1]) fixedW = real[0];
                         if (height * 2 == real[1] && width == real[0]) fixedH = real[1];
@@ -134,7 +133,7 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void installSystemUiRedirect(ClassLoader cl) {
+    private void installSystemUiRedirect() {
         try {
             Class<?> contextImpl = XposedHelpers.findClass("android.app.ContextImpl", null);
             XC_MethodHook redirect = new XC_MethodHook() {
@@ -166,15 +165,17 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
 
     private int[] realDisplay() {
         try {
-            Application app = AndroidAppHelper.currentApplication();
-            if (app == null) return new int[]{0,0};
+            Class<?> activityThread = XposedHelpers.findClass("android.app.ActivityThread", null);
+            Object current = XposedHelpers.callStaticMethod(activityThread, "currentApplication");
+            if (!(current instanceof Application)) return new int[]{0, 0};
+            Application app = (Application) current;
             WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-            if (wm == null) return new int[]{0,0};
+            if (wm == null) return new int[]{0, 0};
             DisplayMetrics metrics = new DisplayMetrics();
             wm.getDefaultDisplay().getRealMetrics(metrics);
             return new int[]{metrics.widthPixels, metrics.heightPixels};
         } catch (Throwable t) {
-            return new int[]{0,0};
+            return new int[]{0, 0};
         }
     }
 
