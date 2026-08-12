@@ -3,6 +3,9 @@ package com.zaid.screenrecorder;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.hardware.display.VirtualDisplay;
+import android.media.MediaCodec;
+import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.util.DisplayMetrics;
@@ -20,13 +23,15 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Capture-pipeline fixes shared by the recorder and supported mirroring apps.
+ * v1.5 capture-engine fix for HyperOS 3 / duchamp.
  *
- * Consent UI replacement intentionally lives only in SystemUiProjectionDialogHook. Keeping
- * one owner avoids duplicate hooks/races between HyperOS ClassLoaders.
+ * The stock MediaProjection consent UI is intentionally left to Android/SystemUI. This
+ * hook runs inside the actual capture clients and fixes the pipeline after consent:
+ * MediaProjection -> VirtualDisplay -> VirtualDisplay.resize -> MediaCodec.configure.
  */
 public class ProjectionFixHook implements IXposedHookLoadPackage {
     private static final String TAG = "ZaidScreenRecorder";
+    private static final String V = "v1.5";
 
     private static final Set<String> PROJECTION_CLIENTS = new HashSet<>(Arrays.asList(
             "com.zhiliaoapp.musically",
@@ -46,13 +51,15 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!TARGETS.contains(lpparam.packageName)) return;
 
-        log("loaded package=" + lpparam.packageName + " process=" + lpparam.processName);
+        log(V + " loaded package=" + lpparam.packageName + " process=" + lpparam.processName);
         installFullDisplayProjectionHook(lpparam.packageName);
         installVirtualDisplayGuard(lpparam.packageName);
+        installVirtualDisplayResizeGuard(lpparam.packageName);
+        installMediaCodecGuard(lpparam.packageName);
 
         if ("com.android.systemui".equals(lpparam.packageName)) {
             installSystemUiRedirect();
-            log("SystemUI consent UI delegated exclusively to v1.4 runtime hook");
+            log(V + " SystemUI keeps stock MediaProjection consent UI");
         }
     }
 
@@ -61,7 +68,7 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
             Class<?> configClass = XposedHelpers.findClassIfExists(
                     "android.media.projection.MediaProjectionConfig", null);
             if (configClass == null) {
-                log(pkg + ": MediaProjectionConfig unavailable");
+                log(V + " " + pkg + ": MediaProjectionConfig unavailable");
                 return;
             }
 
@@ -76,9 +83,9 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                         Object full = XposedHelpers.callStaticMethod(
                                 configClass, "createConfigForDefaultDisplay");
                         param.args[0] = full;
-                        log(pkg + ": force MediaProjectionConfig=DEFAULT_DISPLAY");
+                        log(V + " " + pkg + ": force MediaProjectionConfig=DEFAULT_DISPLAY");
                     } catch (Throwable t) {
-                        log(pkg + ": force config failed " + t);
+                        log(V + " " + pkg + ": force config failed " + t);
                     }
                 }
             });
@@ -95,19 +102,24 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                         Object intent = XposedBridge.invokeOriginalMethod(
                                 withConfig, param.thisObject, new Object[]{full});
                         param.setResult(intent);
-                        log(pkg + ": replaced no-arg capture intent with DEFAULT_DISPLAY");
+                        log(V + " " + pkg + ": replaced no-arg capture intent with DEFAULT_DISPLAY");
                     } catch (Throwable t) {
-                        log(pkg + ": no-arg capture intent replacement failed " + t);
+                        log(V + " " + pkg + ": no-arg capture intent replacement failed " + t);
                     }
                 }
             });
 
-            log(pkg + ": MediaProjection full-display hooks installed");
+            log(V + " " + pkg + ": MediaProjection full-display hooks installed");
         } catch (Throwable t) {
-            log(pkg + ": MediaProjection hook install failed " + t);
+            log(V + " " + pkg + ": MediaProjection hook install failed " + t);
         }
     }
 
+    /**
+     * Fixes only the characteristic half-screen geometry: one axis is exactly half of the
+     * current display while the other axis is already the full corresponding axis. Scaled
+     * VirtualDisplays that preserve both dimensions/aspect are intentionally left alone.
+     */
     private void installVirtualDisplayGuard(String pkg) {
         try {
             XposedBridge.hookAllMethods(MediaProjection.class, "createVirtualDisplay",
@@ -125,37 +137,213 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                             int height = (Integer) param.args[2];
                             int dpi = (Integer) param.args[3];
                             int[] real = realDisplay();
-                            int fixedW = width;
-                            int fixedH = height;
+                            int[] fixed = fixHalfGeometry(width, height, real[0], real[1]);
 
-                            // TikTok's RTC pipeline may intentionally scale its VirtualDisplay.
-                            // Keep its dimensions untouched; only its consent mode is forced to
-                            // the default/full display.
-                            if (real[0] > 0 && real[1] > 0
-                                    && !"com.zhiliaoapp.musically".equals(pkg)) {
-                                if (width * 2 == real[0] && height == real[1]) fixedW = real[0];
-                                if (height * 2 == real[1] && width == real[0]) fixedH = real[1];
-                                if (width * 2 == real[1] && height == real[0]) fixedW = real[1];
-                                if (height * 2 == real[0] && width == real[1]) fixedH = real[0];
-                            }
-
-                            if (fixedW != width || fixedH != height) {
-                                param.args[1] = fixedW;
-                                param.args[2] = fixedH;
-                                log(pkg + ": fixed VirtualDisplay " + name + " "
-                                        + width + "x" + height + " -> "
-                                        + fixedW + "x" + fixedH + " dpi=" + dpi);
+                            if (fixed[0] != width || fixed[1] != height) {
+                                param.args[1] = fixed[0];
+                                param.args[2] = fixed[1];
+                                log(V + " " + pkg + ": HALF-SCREEN VirtualDisplay FIX " + name
+                                        + " " + width + "x" + height + " -> "
+                                        + fixed[0] + "x" + fixed[1] + " dpi=" + dpi
+                                        + " real=" + real[0] + "x" + real[1]);
                             } else {
-                                log(pkg + ": VirtualDisplay " + name + " "
+                                log(V + " " + pkg + ": VirtualDisplay " + name + " "
                                         + width + "x" + height + " dpi=" + dpi
                                         + " real=" + real[0] + "x" + real[1]);
                             }
                         }
                     });
-            log(pkg + ": VirtualDisplay guard installed");
+            log(V + " " + pkg + ": VirtualDisplay create guard installed");
         } catch (Throwable t) {
-            log(pkg + ": VirtualDisplay hook install failed " + t);
+            log(V + " " + pkg + ": VirtualDisplay hook install failed " + t);
         }
+    }
+
+    private void installVirtualDisplayResizeGuard(String pkg) {
+        try {
+            XposedBridge.hookAllMethods(VirtualDisplay.class, "resize", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args == null || param.args.length < 3) return;
+                    if (!(param.args[0] instanceof Integer)
+                            || !(param.args[1] instanceof Integer)
+                            || !(param.args[2] instanceof Integer)) return;
+
+                    int width = (Integer) param.args[0];
+                    int height = (Integer) param.args[1];
+                    int dpi = (Integer) param.args[2];
+                    int[] real = realDisplay();
+                    int[] fixed = fixHalfGeometry(width, height, real[0], real[1]);
+
+                    if (fixed[0] != width || fixed[1] != height) {
+                        param.args[0] = fixed[0];
+                        param.args[1] = fixed[1];
+                        log(V + " " + pkg + ": HALF-SCREEN VirtualDisplay.resize FIX "
+                                + width + "x" + height + " -> " + fixed[0] + "x" + fixed[1]
+                                + " dpi=" + dpi + " real=" + real[0] + "x" + real[1]);
+                    } else {
+                        log(V + " " + pkg + ": VirtualDisplay.resize " + width + "x" + height
+                                + " dpi=" + dpi + " real=" + real[0] + "x" + real[1]);
+                    }
+                }
+            });
+            log(V + " " + pkg + ": VirtualDisplay resize guard installed");
+        } catch (Throwable t) {
+            log(V + " " + pkg + ": VirtualDisplay resize hook failed " + t);
+        }
+    }
+
+    /**
+     * MediaCodec safety net. We do not blindly force every encoder to native resolution.
+     * We only mutate unmistakable half-screen cases and crop metadata that clips exactly
+     * one half of an otherwise valid video frame.
+     */
+    private void installMediaCodecGuard(String pkg) {
+        try {
+            XposedBridge.hookAllMethods(MediaCodec.class, "configure", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args == null || param.args.length == 0
+                            || !(param.args[0] instanceof MediaFormat)) return;
+
+                    MediaFormat format = (MediaFormat) param.args[0];
+                    String mime = safeString(format, MediaFormat.KEY_MIME);
+                    if (mime == null || !mime.startsWith("video/")) return;
+
+                    boolean encoder = isEncoderConfigure(param.args);
+                    int width = safeInt(format, MediaFormat.KEY_WIDTH, -1);
+                    int height = safeInt(format, MediaFormat.KEY_HEIGHT, -1);
+                    int[] real = realDisplay();
+
+                    int cropLeft = safeInt(format, "crop-left", -1);
+                    int cropRight = safeInt(format, "crop-right", -1);
+                    int cropTop = safeInt(format, "crop-top", -1);
+                    int cropBottom = safeInt(format, "crop-bottom", -1);
+
+                    log(V + " " + pkg + ": MediaCodec.configure mime=" + mime
+                            + " encoder=" + encoder + " frame=" + width + "x" + height
+                            + " crop=" + cropLeft + "," + cropTop + "-"
+                            + cropRight + "," + cropBottom
+                            + " real=" + real[0] + "x" + real[1]);
+
+                    if (!encoder) return;
+
+                    boolean changed = false;
+
+                    // Remove crop metadata only if it clips exactly one half of the encoded
+                    // frame (or is clearly outside the encoded bounds).
+                    if (width > 0 && height > 0 && hasAnyCrop(
+                            cropLeft, cropRight, cropTop, cropBottom)) {
+                        int left = cropLeft >= 0 ? cropLeft : 0;
+                        int top = cropTop >= 0 ? cropTop : 0;
+                        int right = cropRight >= 0 ? cropRight : width - 1;
+                        int bottom = cropBottom >= 0 ? cropBottom : height - 1;
+                        int cropW = right - left + 1;
+                        int cropH = bottom - top + 1;
+
+                        boolean invalid = left < 0 || top < 0 || right >= width || bottom >= height
+                                || cropW <= 0 || cropH <= 0;
+                        boolean half = (cropW * 2 == width && cropH == height)
+                                || (cropH * 2 == height && cropW == width);
+
+                        if (invalid || half) {
+                            removeCropKeys(format);
+                            changed = true;
+                            log(V + " " + pkg + ": HALF-SCREEN MediaCodec crop REMOVED "
+                                    + "frame=" + width + "x" + height + " crop="
+                                    + cropW + "x" + cropH + " invalid=" + invalid);
+                        }
+                    }
+
+                    // Only force encoder width/height when exactly one axis is half and the
+                    // other is already full. Normal downscaling (e.g. 1080p from 1220x2712)
+                    // is preserved.
+                    if (width > 0 && height > 0 && real[0] > 0 && real[1] > 0) {
+                        int[] fixed = fixHalfGeometry(width, height, real[0], real[1]);
+                        if (fixed[0] != width || fixed[1] != height) {
+                            format.setInteger(MediaFormat.KEY_WIDTH, fixed[0]);
+                            format.setInteger(MediaFormat.KEY_HEIGHT, fixed[1]);
+                            changed = true;
+                            log(V + " " + pkg + ": HALF-SCREEN MediaCodec frame FIX "
+                                    + width + "x" + height + " -> "
+                                    + fixed[0] + "x" + fixed[1]);
+                        }
+                    }
+
+                    if (changed) {
+                        param.args[0] = format;
+                        log(V + " " + pkg + ": MediaCodec.configure patched format=" + format);
+                    }
+                }
+            });
+            log(V + " " + pkg + ": MediaCodec half-screen guard installed");
+        } catch (Throwable t) {
+            log(V + " " + pkg + ": MediaCodec hook install failed " + t);
+        }
+    }
+
+    private boolean isEncoderConfigure(Object[] args) {
+        if (args == null) return false;
+        // Public MediaCodec.configure overloads carry flags as an int. CONFIGURE_FLAG_ENCODE=1.
+        for (int i = args.length - 1; i >= 1; i--) {
+            if (args[i] instanceof Integer) {
+                int flags = (Integer) args[i];
+                return (flags & MediaCodec.CONFIGURE_FLAG_ENCODE) != 0;
+            }
+        }
+        return false;
+    }
+
+    private int[] fixHalfGeometry(int width, int height, int realW, int realH) {
+        if (width <= 0 || height <= 0 || realW <= 0 || realH <= 0) {
+            return new int[]{width, height};
+        }
+
+        // Match the requested orientation to the physical display orientation.
+        int targetW;
+        int targetH;
+        if ((width >= height) == (realW >= realH)) {
+            targetW = realW;
+            targetH = realH;
+        } else {
+            targetW = realH;
+            targetH = realW;
+        }
+
+        int fixedW = width;
+        int fixedH = height;
+
+        if (width * 2 == targetW && height == targetH) fixedW = targetW;
+        if (height * 2 == targetH && width == targetW) fixedH = targetH;
+
+        return new int[]{fixedW, fixedH};
+    }
+
+    private boolean hasAnyCrop(int l, int r, int t, int b) {
+        return l >= 0 || r >= 0 || t >= 0 || b >= 0;
+    }
+
+    private void removeCropKeys(MediaFormat format) {
+        try { format.removeKey("crop-left"); } catch (Throwable ignored) {}
+        try { format.removeKey("crop-right"); } catch (Throwable ignored) {}
+        try { format.removeKey("crop-top"); } catch (Throwable ignored) {}
+        try { format.removeKey("crop-bottom"); } catch (Throwable ignored) {}
+    }
+
+    private int safeInt(MediaFormat format, String key, int fallback) {
+        try {
+            if (format.containsKey(key)) return format.getInteger(key);
+        } catch (Throwable ignored) {
+        }
+        return fallback;
+    }
+
+    private String safeString(MediaFormat format, String key) {
+        try {
+            if (format.containsKey(key)) return format.getString(key);
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private void installSystemUiRedirect() {
@@ -183,16 +371,16 @@ public class ProjectionFixHook implements IXposedHookLoadPackage {
                         replacement.addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                         param.args[i] = replacement;
-                        log("SystemUI redirected MIUI Screen Recorder -> Zaid Screen Recorder");
+                        log(V + " SystemUI redirected MIUI Screen Recorder -> Zaid Screen Recorder");
                     }
                 }
             };
 
             XposedBridge.hookAllMethods(contextImpl, "startActivity", redirect);
             XposedBridge.hookAllMethods(contextImpl, "startActivityAsUser", redirect);
-            log("SystemUI recorder redirect installed");
+            log(V + " SystemUI recorder redirect installed");
         } catch (Throwable t) {
-            log("SystemUI redirect install failed " + t);
+            log(V + " SystemUI redirect install failed " + t);
         }
     }
 
